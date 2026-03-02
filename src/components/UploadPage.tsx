@@ -1,10 +1,10 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { Upload, FileSpreadsheet, ArrowRight } from "lucide-react";
 import { QCMEntry } from "../types/qcm.types";
-import AutocompleteInput from "./AutocompleteInput";
 import { toast } from "sonner";
 import { useNavigate } from "react-router-dom";
 import { syncLocalDataToSupabase } from "../supabaseService";
+import { supabase } from "../supabaseClient"; // adapte le chemin si nécessaire
 
 interface UploadPageProps {
   onSeriesUploaded: (data: {
@@ -15,90 +15,15 @@ interface UploadPageProps {
   }) => void;
 }
 
-const OBJECTIVES = [
-  "AVC",
-  "Adénopathies superficielles",
-  "Anémies",
-  "Appendicite aiguë",
-  "ACR",
-  "Arthrite septique",
-  "Asthme",
-  "Bronchiolites du nourrisson",
-  "BPCO",
-  "Brûlures cutanées récentes",
-  "Cancer broncho-pulmonaire",
-  "Cancer du cavum",
-  "Cancer du col de l'utérus",
-  "Cancer du sein",
-  "Cancers colorectaux",
-  "Céphalées",
-  "Coma",
-  "Contraception",
-  "Déshydratations aiguës de l'enfant",
-  "Diabète sucré",
-  "Diarrhées chroniques",
-  "Douleurs thoraciques aiguës",
-  "Dyslipidémies",
-  "Dysphagies",
-  "Endocardite infectieuse",
-  "Épilepsies",
-  "Choc cardiogénique",
-  "État de choc hémorragique",
-  "États confusionnels",
-  "États septiques graves",
-  "Fractures ouvertes de la jambe",
-  "GEU",
-  "Hématuries",
-  "Hémorragies digestives",
-  "Hépatites virales",
-  "Hydatidoses hépatiques et pulmonaires",
-  "Hypercalcémies",
-  "HTA",
-  "Hyperthyroïdies",
-  "Hypothyroïdies",
-  "Ictères",
-  "IVAS",
-  "IRB",
-  "IST",
-  "Infections urinaires",
-  "IRA",
-  "ISA",
-  "Intoxications",
-  "Ischémie aiguë des membres",
-  "Lithiase urinaire",
-  "MVTE",
-  "Méningites",
-  "Métrorragies",
-  "OIA",
-  "Œdèmes",
-  "Œil rouge",
-  "Péritonites aiguës",
-  "Polyarthrite rhumatoïde",
-  "Polytraumatisme",
-  "Prééclampsie",
-  "Douleur aiguë",
-  "Purpuras",
-  "Schizophrénie",
-  "Splénomégalies",
-  "SCA",
-  "Transfusion sanguine",
-  "Traumatismes crâniens",
-  "Troubles acido-basiques",
-  "Troubles anxieux",
-  "Troubles de l'humeur",
-  "Troubles de l'hydratation/ Dyskaliémies",
-  "Tuberculose ",
-  "Tumeurs de la prostate",
-  "UGD",
-  "Vaccinations"
-];
+interface ObjectiveOption {
+  id: string;
+  name: string;
+  specialty: string;
+  level: string;
+  bank_size: number;
+}
 
-const FACULTIES = [
-  "FMT",
-  "FMM",
-  "FMS",
-  "FMSF",
-];
+const FACULTIES = ["FMT", "FMM", "FMS", "FMSF"];
 
 const YEARS = Array.from({ length: 2035 - 2019 + 1 }, (_, i) => String(2019 + i));
 
@@ -110,29 +35,27 @@ function generateUniqueId(prefix: string = "qcm"): string {
 
 function parseCSVLine(line: string): string[] {
   const result: string[] = [];
-  let current = '';
+  let current = "";
   let inQuotes = false;
-  
+
   for (let i = 0; i < line.length; i++) {
     const char = line[i];
-    
     if (char === '"') {
       inQuotes = !inQuotes;
-    } else if (char === ',' && !inQuotes) {
+    } else if (char === "," && !inQuotes) {
       result.push(current);
-      current = '';
+      current = "";
     } else {
       current += char;
     }
   }
-  
+
   result.push(current);
   return result;
 }
 
 export default function UploadPage({ onSeriesUploaded }: UploadPageProps) {
-
-  const navigate = useNavigate(); 
+  const navigate = useNavigate();
   const [objective, setObjective] = useState("");
   const [faculty, setFaculty] = useState("");
   const [year, setYear] = useState("");
@@ -140,6 +63,32 @@ export default function UploadPage({ onSeriesUploaded }: UploadPageProps) {
   const [error, setError] = useState<string | null>(null);
   const [isDragOver, setIsDragOver] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
+
+  // Objectifs depuis Supabase
+  const [objectives, setObjectives] = useState<ObjectiveOption[]>([]);
+  const [loadingObjectives, setLoadingObjectives] = useState(false);
+  const [objectivesError, setObjectivesError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const fetchObjectives = async () => {
+      setLoadingObjectives(true);
+      setObjectivesError(null);
+      const { data, error } = await supabase
+        .from("courses")
+        .select("id, name, specialty, level, bank_size")
+        .order("name", { ascending: true });
+
+      if (error) {
+        console.error("Erreur chargement objectifs:", error);
+        setObjectivesError("Impossible de charger les objectifs.");
+      } else if (data) {
+        setObjectives(data);
+      }
+      setLoadingObjectives(false);
+    };
+
+    fetchObjectives();
+  }, []);
 
   const handleFileUpload = (file: File) => {
     setUploadedFile(file);
@@ -182,13 +131,13 @@ export default function UploadPage({ onSeriesUploaded }: UploadPageProps) {
     reader.onload = async (e) => {
       try {
         const text = e.target?.result as string;
-        const fileExtension = uploadedFile.name.split('.').pop()?.toLowerCase();
-        
+        const fileExtension = uploadedFile.name.split(".").pop()?.toLowerCase();
+
         let questions: QCMEntry[] = [];
-        
-        if (fileExtension === 'csv') {
+
+        if (fileExtension === "csv") {
           questions = parseCSV(text);
-        } else if (fileExtension === 'json') {
+        } else if (fileExtension === "json") {
           questions = JSON.parse(text);
         } else {
           setError("Format de fichier non supporté. Utilisez CSV ou JSON.");
@@ -197,23 +146,21 @@ export default function UploadPage({ onSeriesUploaded }: UploadPageProps) {
           return;
         }
 
-        // Sauvegarder dans localStorage
         localStorage.setItem("qcm-questions", JSON.stringify(questions));
         localStorage.setItem("qcm-metadata", JSON.stringify({ objective, faculty, year }));
 
-        toast.success('✅ Série créée avec succès !', {
-          description: `${questions.length} question${questions.length > 1 ? 's' : ''} chargée${questions.length > 1 ? 's' : ''}`
+        toast.success("✅ Série créée avec succès !", {
+          description: `${questions.length} question${questions.length > 1 ? "s" : ""} chargée${questions.length > 1 ? "s" : ""}`,
         });
-        
-                
+
         const seriesId = await syncLocalDataToSupabase(
           { objective, faculty, year },
           questions
         );
-        
+
         toast.success("Série sauvegardée dans le cloud !");
         navigate(`/series/${seriesId}`);
-            } catch (err) {
+      } catch (err) {
         console.error("Erreur import fichier:", err);
         setError("Erreur lors de la lecture du fichier.");
         setTimeout(() => setError(null), 3000);
@@ -225,36 +172,37 @@ export default function UploadPage({ onSeriesUploaded }: UploadPageProps) {
   };
 
   function parseCSV(text: string): QCMEntry[] {
-    const lines = text.split('\n').filter(line => line.trim());
-    if (lines.length < 2) {
-      throw new Error("Fichier CSV vide ou invalide.");
-    }
+    const lines = text.split("\n").filter((line) => line.trim());
+    if (lines.length < 2) throw new Error("Fichier CSV vide ou invalide.");
 
     const entries: QCMEntry[] = [];
     const clinicalCaseIdMap: { [key: string]: string } = {};
-    
+
     for (let i = 1; i < lines.length; i++) {
       const row = parseCSVLine(lines[i]);
       if (row.length < 2) continue;
-      
+
       const question = row[0]?.trim();
       if (!question) continue;
-      
+
       const propositionsStr = row[1]?.trim() || "";
-      const options = propositionsStr.split(/[;|]/).map(opt => opt.trim()).filter(opt => opt.length > 0);
-      
+      const options = propositionsStr
+        .split(/[;|]/)
+        .map((opt) => opt.trim())
+        .filter((opt) => opt.length > 0);
+
       if (options.length < 2) continue;
-      
+
       const csvCaseId = row[2]?.trim() || null;
       let finalClinicalCaseId = null;
-      
+
       if (csvCaseId) {
         if (!clinicalCaseIdMap[csvCaseId]) {
           clinicalCaseIdMap[csvCaseId] = generateUniqueId("cas");
         }
         finalClinicalCaseId = clinicalCaseIdMap[csvCaseId];
       }
-      
+
       const entry: QCMEntry = {
         id: generateUniqueId("qcm"),
         question,
@@ -268,15 +216,21 @@ export default function UploadPage({ onSeriesUploaded }: UploadPageProps) {
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       };
-      
+
       entries.push(entry);
     }
-    
+
     return entries;
   }
 
+  const isFormValid = uploadedFile && objective && faculty && year && !isProcessing;
+
   return (
-<div className="min-h-screen p-6" style={{background: "linear-gradient(to bottom right, #eef2ff, #fff, #f5f3ff)"}}>      <div className="max-w-4xl mx-auto">
+    <div
+      className="min-h-screen p-6"
+      style={{ background: "linear-gradient(to bottom right, #eef2ff, #fff, #f5f3ff)" }}
+    >
+      <div className="max-w-4xl mx-auto">
         {/* Header */}
         <div className="text-center mb-8">
           <h1 className="mb-2 text-indigo-600">QCM Database Builder</h1>
@@ -294,17 +248,15 @@ export default function UploadPage({ onSeriesUploaded }: UploadPageProps) {
 
           {/* Upload Section */}
           <div className="mb-8">
-            <label className="block mb-3 text-gray-700">
-              📤 Uploader la série de QCM
-            </label>
+            <label className="block mb-3 text-gray-700">📤 Uploader la série de QCM</label>
             <div
               onDragOver={handleDragOver}
               onDragLeave={handleDragLeave}
               onDrop={handleDrop}
               className={`border-2 border-dashed rounded-xl p-12 text-center transition-all ${
-                isDragOver 
-                  ? 'border-indigo-500 bg-indigo-50' 
-                  : 'border-gray-300 hover:border-indigo-400'
+                isDragOver
+                  ? "border-indigo-500 bg-indigo-50"
+                  : "border-gray-300 hover:border-indigo-400"
               }`}
             >
               {uploadedFile ? (
@@ -317,7 +269,7 @@ export default function UploadPage({ onSeriesUploaded }: UploadPageProps) {
                   <button
                     onClick={() => setUploadedFile(null)}
                     className="underline"
-                    style={{color: "#6366f1"}}
+                    style={{ color: "#6366f1" }}
                   >
                     Changer de fichier
                   </button>
@@ -328,9 +280,12 @@ export default function UploadPage({ onSeriesUploaded }: UploadPageProps) {
                   <p className="text-gray-600">Glissez-déposez votre fichier ici</p>
                   <p className="text-gray-500">ou</p>
                   <label className="inline-block">
-                  <span className="px-6 py-3 text-white rounded-lg cursor-pointer transition-colors" style={{background: "#4f46e5"}}>
-                    Parcourir les fichiers
-                  </span>
+                    <span
+                      className="px-6 py-3 text-white rounded-lg cursor-pointer transition-colors"
+                      style={{ background: "#4f46e5" }}
+                    >
+                      Parcourir les fichiers
+                    </span>
                     <input
                       type="file"
                       accept=".csv,.json"
@@ -349,21 +304,45 @@ export default function UploadPage({ onSeriesUploaded }: UploadPageProps) {
 
           {/* Configuration Grid */}
           <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
-            {/* Objectif */}
-            <AutocompleteInput
-              options={OBJECTIVES}
-              value={objective}
-              onChange={setObjective}
-              placeholder="Rechercher une maladie..."
-              label="Objectif (Maladie)"
-              icon="🎯"
-            />
+            {/* Objectif depuis Supabase */}
+            <div>
+              <label className="block mb-2 text-gray-700">🎯 Objectif (Cours)</label>
+              {objectivesError ? (
+                <div className="p-3 bg-red-50 border border-red-200 rounded-lg text-red-600 text-sm">
+                  {objectivesError}
+                  <button
+                    onClick={() => window.location.reload()}
+                    className="block mt-1 underline text-red-500"
+                  >
+                    Réessayer
+                  </button>
+                </div>
+              ) : (
+                <select
+                  value={objective}
+                  onChange={(e) => setObjective(e.target.value)}
+                  disabled={loadingObjectives}
+                  className="w-full p-3 border border-gray-300 rounded-lg bg-white focus:ring-2 focus:ring-indigo-500 focus:border-transparent disabled:bg-gray-50 disabled:text-gray-400"
+                >
+                  <option value="">
+                    {loadingObjectives ? "⏳ Chargement..." : "Sélectionner un cours..."}
+                  </option>
+                  {objectives.map((obj) => (
+                    <option key={obj.id} value={obj.name}>
+                      {obj.name}
+                      {obj.specialty ? ` — ${obj.specialty}` : ""}
+                    </option>
+                  ))}
+                </select>
+              )}
+              {!loadingObjectives && objectives.length > 0 && (
+                <p className="text-xs text-gray-400 mt-1">{objectives.length} cours disponibles</p>
+              )}
+            </div>
 
             {/* Faculté */}
             <div>
-              <label className="block mb-2 text-gray-700">
-                🏛️ Faculté
-              </label>
+              <label className="block mb-2 text-gray-700">🏛️ Faculté</label>
               <select
                 value={faculty}
                 onChange={(e) => setFaculty(e.target.value)}
@@ -380,9 +359,7 @@ export default function UploadPage({ onSeriesUploaded }: UploadPageProps) {
 
             {/* Année */}
             <div>
-              <label className="block mb-2 text-gray-700">
-                📅 Année
-              </label>
+              <label className="block mb-2 text-gray-700">📅 Année</label>
               <select
                 value={year}
                 onChange={(e) => setYear(e.target.value)}
@@ -398,26 +375,19 @@ export default function UploadPage({ onSeriesUploaded }: UploadPageProps) {
             </div>
           </div>
 
-          {/* Info sur les objectifs */}
-          <div className="mb-6 p-3 bg-indigo-50 border border-indigo-200 rounded-lg">
-            <p className="text-indigo-900">
-              💡 <strong>{OBJECTIVES.length} objectifs de maladies</strong> disponibles pour classification
-            </p>
-          </div>
-
           {/* Continue Button */}
           <button
-  onClick={processAndContinue}
-  disabled={!uploadedFile || !objective || !faculty || !year || isProcessing}
-  className="w-full py-4 rounded-xl flex items-center justify-center gap-3 transition-all shadow-lg"
-  style={{
-    background: uploadedFile && objective && faculty && year && !isProcessing
-      ? "linear-gradient(to right, #4f46e5, #9333ea)"
-      : "#e5e7eb",
-    color: uploadedFile && objective && faculty && year && !isProcessing ? "white" : "#9ca3af",
-    cursor: uploadedFile && objective && faculty && year && !isProcessing ? "pointer" : "not-allowed"
-  }}
->
+            onClick={processAndContinue}
+            disabled={!isFormValid}
+            className="w-full py-4 rounded-xl flex items-center justify-center gap-3 transition-all shadow-lg"
+            style={{
+              background: isFormValid
+                ? "linear-gradient(to right, #4f46e5, #9333ea)"
+                : "#e5e7eb",
+              color: isFormValid ? "white" : "#9ca3af",
+              cursor: isFormValid ? "pointer" : "not-allowed",
+            }}
+          >
             {isProcessing ? (
               <>
                 <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
@@ -441,9 +411,15 @@ export default function UploadPage({ onSeriesUploaded }: UploadPageProps) {
               Exemple : "Question?","Réponse A;Réponse B;Réponse C",""
             </p>
             <div className="space-y-2 text-sm text-blue-800">
-              <p>✅ Séparateur de propositions : <strong>;</strong> ou <strong>|</strong></p>
-              <p>✅ Questions d'un même cas clinique : même <strong>cas_clinique_id</strong></p>
-              <p>✅ QCM simple : laissez <strong>cas_clinique_id</strong> vide</p>
+              <p>
+                ✅ Séparateur de propositions : <strong>;</strong> ou <strong>|</strong>
+              </p>
+              <p>
+                ✅ Questions d'un même cas clinique : même <strong>cas_clinique_id</strong>
+              </p>
+              <p>
+                ✅ QCM simple : laissez <strong>cas_clinique_id</strong> vide
+              </p>
             </div>
           </div>
         </div>

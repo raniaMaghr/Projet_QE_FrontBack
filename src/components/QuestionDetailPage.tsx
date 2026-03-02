@@ -7,14 +7,19 @@ import { supabase } from "../supabaseClient";
 import {
   getQuestionsBySeriesId,
   updateQuestion,
-  getAllSubCourses,
-  createSubCourse,
   getSeriesById,
   convertSupabaseQuestionToQCMEntry,
   convertSupabaseSeriesToMetadata,
 } from "../supabaseService";
 
 const TAGS = ["Clinique", "Anatomie", "Biologie", "Physiologie", "Épidémiologie"];
+
+interface SubCourse {
+  id: string;
+  name: string;
+  course_id: string;
+  description?: string;
+}
 
 export default function QuestionDetailPage() {
   const { questionId } = useParams<{ questionId: string }>();
@@ -23,7 +28,8 @@ export default function QuestionDetailPage() {
   const [questions, setQuestions] = useState<QCMEntry[]>([]);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [metadata, setMetadata] = useState<SeriesMetadata | null>(null);
-  const [subCourses, setSubCourses] = useState<string[]>([]);
+  const [subCourses, setSubCourses] = useState<SubCourse[]>([]);
+  const [courseId, setCourseId] = useState<string | null>(null); // ID du cours lié à l'objectif
   const [newSubCourse, setNewSubCourse] = useState("");
   const [showAddSubCourse, setShowAddSubCourse] = useState(false);
   const [addingSubCourse, setAddingSubCourse] = useState(false);
@@ -36,6 +42,7 @@ export default function QuestionDetailPage() {
     const fetchData = async () => {
       setLoading(true);
       try {
+        // 1. Récupérer la question pour avoir le series_id
         const { data: qData, error: qError } = await supabase
           .from("qcm_questions")
           .select("*")
@@ -50,9 +57,31 @@ export default function QuestionDetailPage() {
 
         const foundSeriesId: string = qData.series_id;
 
+        // 2. Récupérer la série et ses métadonnées
         const series = await getSeriesById(foundSeriesId);
-        if (series) setMetadata(convertSupabaseSeriesToMetadata(series));
+        if (series) {
+          const meta = convertSupabaseSeriesToMetadata(series);
+          setMetadata(meta);
 
+          // 3. Trouver le course_id à partir du nom de l'objectif (meta.objective)
+          const { data: courseData, error: courseError } = await supabase
+            .from("courses")
+            .select("id, name")
+            .eq("name", meta.objective)
+            .single();
+
+          if (!courseError && courseData) {
+            const foundCourseId = courseData.id;
+            setCourseId(foundCourseId);
+
+            // 4. Charger les sous-cours liés à ce cours
+            await fetchSubCourses(foundCourseId);
+          } else {
+            console.warn("Cours introuvable pour l'objectif:", meta.objective);
+          }
+        }
+
+        // 5. Charger toutes les questions de la série
         const supabaseQuestions = await getQuestionsBySeriesId(foundSeriesId);
         const converted = supabaseQuestions.map(convertSupabaseQuestionToQCMEntry);
 
@@ -72,9 +101,6 @@ export default function QuestionDetailPage() {
           setCurrentIndex(0);
         }
 
-        const scs = await getAllSubCourses();
-        setSubCourses(scs);
-
       } catch (err) {
         console.error("Erreur chargement:", err);
         toast.error("Impossible de charger la question");
@@ -85,6 +111,22 @@ export default function QuestionDetailPage() {
 
     fetchData();
   }, [questionId]);
+
+  // Charger les sous-cours filtrés par course_id
+  const fetchSubCourses = async (cid: string) => {
+    const { data, error } = await supabase
+      .from("sub_courses")
+      .select("id, name, course_id, description")
+      .eq("course_id", cid)
+      .order("name", { ascending: true });
+
+    if (error) {
+      console.error("Erreur chargement sous-cours:", error);
+      toast.error("Impossible de charger les sous-cours");
+    } else {
+      setSubCourses(data || []);
+    }
+  };
 
   if (loading) {
     return (
@@ -98,10 +140,10 @@ export default function QuestionDetailPage() {
 
   if (!currentQ || !metadata) {
     return (
-      <div className="min-h-screen p-6" style={{background: "linear-gradient(to bottom right, #eef2ff, #fff, #f5f3ff)"}}>
+      <div className="min-h-screen p-6" style={{ background: "linear-gradient(to bottom right, #eef2ff, #fff, #f5f3ff)" }}>
         <div className="text-center">
           <p className="text-gray-600 mb-4">Question introuvable</p>
-          <button onClick={() => navigate(-1)} className="px-4 py-2 text-white rounded-lg" style={{background: "#4f46e5"}}>
+          <button onClick={() => navigate(-1)} className="px-4 py-2 text-white rounded-lg" style={{ background: "#4f46e5" }}>
             Retour
           </button>
         </div>
@@ -137,7 +179,6 @@ export default function QuestionDetailPage() {
     });
   };
 
-  // ✅ FIX sauvegarde : séquentiel pour éviter AbortError
   const handleSave = async () => {
     try {
       for (const q of questions) {
@@ -151,25 +192,38 @@ export default function QuestionDetailPage() {
     }
   };
 
-  // ✅ Ajout sous-cours avec état dédié
+  // Ajouter un sous-cours lié au course_id de l'objectif
   const handleAddSubCourse = async () => {
     const trimmed = newSubCourse.trim();
     if (!trimmed) {
       toast.warning("Veuillez saisir un nom");
       return;
     }
-    if (subCourses.includes(trimmed)) {
+    if (!courseId) {
+      toast.error("Aucun cours associé à cet objectif");
+      return;
+    }
+    if (subCourses.some(sc => sc.name === trimmed)) {
       toast.warning("Ce sous-cours existe déjà");
       return;
     }
+
     setAddingSubCourse(true);
     try {
-      await createSubCourse(trimmed);
-      setSubCourses(prev => [...prev, trimmed]);
+      const { data, error } = await supabase
+        .from("sub_courses")
+        .insert({ name: trimmed, course_id: courseId })
+        .select("id, name, course_id, description")
+        .single();
+
+      if (error) throw error;
+
+      setSubCourses(prev => [...prev, data].sort((a, b) => a.name.localeCompare(b.name)));
       setNewSubCourse("");
       setShowAddSubCourse(false);
-      toast.success(`"${trimmed}" ajouté`);
-    } catch {
+      toast.success(`"${trimmed}" ajouté à ${metadata.objective}`);
+    } catch (err) {
+      console.error("Erreur ajout sous-cours:", err);
       toast.error("Erreur lors de l'ajout");
     } finally {
       setAddingSubCourse(false);
@@ -218,7 +272,8 @@ export default function QuestionDetailPage() {
   };
 
   return (
-<div className="min-h-screen p-6" style={{background: "linear-gradient(to bottom right, #eef2ff, #fff, #f5f3ff)"}}>      <div className="max-w-6xl mx-auto">
+    <div className="min-h-screen p-6" style={{ background: "linear-gradient(to bottom right, #eef2ff, #fff, #f5f3ff)" }}>
+      <div className="max-w-6xl mx-auto">
 
         {/* Header */}
         <div className="mb-6">
@@ -237,7 +292,7 @@ export default function QuestionDetailPage() {
                   {metadata.objective} • {metadata.faculty} • {metadata.year}
                 </div>
               </div>
-              <button onClick={handleSave} className="flex items-center gap-2 px-4 py-2 text-white rounded-lg transition-colors" style={{background: "#16a34a"}}>
+              <button onClick={handleSave} className="flex items-center gap-2 px-4 py-2 text-white rounded-lg transition-colors" style={{ background: "#16a34a" }}>
                 <Save className="w-4 h-4" />
                 Sauvegarder
               </button>
@@ -319,7 +374,7 @@ export default function QuestionDetailPage() {
                       placeholder={`Option ${letter}`}
                     />
                     {currentQ.options.length > 2 && (
-                      <button onClick={() => removeOption(i)} className="p-2 rounded-lg transition-colors" style={{color: "#dc2626"}}>
+                      <button onClick={() => removeOption(i)} className="p-2 rounded-lg transition-colors" style={{ color: "#dc2626" }}>
                         <Trash2 className="w-4 h-4" />
                       </button>
                     )}
@@ -328,7 +383,7 @@ export default function QuestionDetailPage() {
               })}
             </div>
             {currentQ.options.length < 10 && (
-              <button onClick={addOption} className="mt-3 flex items-center gap-2 px-4 py-2 rounded-lg transition-colors" style={{color: "#4f46e5"}}>
+              <button onClick={addOption} className="mt-3 flex items-center gap-2 px-4 py-2 rounded-lg transition-colors" style={{ color: "#4f46e5" }}>
                 <Plus className="w-4 h-4" />
                 Ajouter une option
               </button>
@@ -345,9 +400,10 @@ export default function QuestionDetailPage() {
                   onClick={() => toggleCorrectAnswer(letter)}
                   disabled={!currentQ.options[i]?.trim()}
                   className={`w-12 h-12 rounded-full border-2 transition-all font-medium
-                  ${currentQ.correctAnswers.includes(letter) ? "text-white border-transparent shadow-lg scale-110" : "bg-white text-gray-700 border-gray-300"}                    ${!currentQ.options[i]?.trim() ? "opacity-30 cursor-not-allowed" : "cursor-pointer"}`}
+                    ${currentQ.correctAnswers.includes(letter) ? "text-white border-transparent shadow-lg scale-110" : "bg-white text-gray-700 border-gray-300"}
+                    ${!currentQ.options[i]?.trim() ? "opacity-30 cursor-not-allowed" : "cursor-pointer"}`}
                   title={currentQ.options[i] || "Option vide"}
-                  style={{background: currentQ.correctAnswers.includes(letter) ? "#16a34a" : ""}}
+                  style={{ background: currentQ.correctAnswers.includes(letter) ? "#16a34a" : "" }}
                 >
                   {letter}
                 </button>
@@ -373,7 +429,8 @@ export default function QuestionDetailPage() {
                   key={tag}
                   onClick={() => toggleTag(tag)}
                   className={`px-4 py-2 rounded-full border transition-all ${currentQ.tags?.includes(tag) ? "text-white border-transparent shadow-md" : "bg-white text-gray-700 border-gray-300"}`}
-                  style={{background: currentQ.tags?.includes(tag) ? "#4f46e5" : ""}}                >
+                  style={{ background: currentQ.tags?.includes(tag) ? "#4f46e5" : "" }}
+                >
                   {tag}
                 </button>
               ))}
@@ -385,31 +442,43 @@ export default function QuestionDetailPage() {
             )}
           </div>
 
-          {/* ✅ Sous-cours — section entièrement réécrite */}
+          {/* Sous-cours — filtrés par l'objectif de la série */}
           <div className="mb-6">
-            <label className="block mb-3 text-gray-700 font-medium">Sous-cours</label>
+            <label className="block mb-1 text-gray-700 font-medium">Sous-cours</label>
 
-            {/* Ligne : sélecteur + bouton "Nouveau" */}
+            {/* Contexte : objectif lié */}
+            {courseId ? (
+              <p className="text-xs text-indigo-600 mb-3">
+                📚 Sous-cours de : <strong>{metadata.objective}</strong> ({subCourses.length} disponible{subCourses.length > 1 ? "s" : ""})
+              </p>
+            ) : (
+              <p className="text-xs text-orange-500 mb-3">
+                ⚠️ Aucun cours trouvé pour l'objectif « {metadata.objective} »
+              </p>
+            )}
+
+            {/* Sélecteur + bouton Nouveau */}
             <div className="flex gap-2">
               <select
                 value={currentQ.subCourse || ""}
                 onChange={(e) => updateCurrentQuestion({ subCourse: e.target.value || null })}
-                className="flex-1 p-3 border border-gray-300 rounded-lg bg-white focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition-shadow"
+                disabled={!courseId}
+                className="flex-1 p-3 border border-gray-300 rounded-lg bg-white focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition-shadow disabled:bg-gray-50 disabled:text-gray-400"
               >
                 <option value="">-- Choisir un sous-cours --</option>
-                {subCourses.map((sc: string) => (
-                  <option key={sc} value={sc}>{sc}</option>
+                {subCourses.map((sc) => (
+                  <option key={sc.id} value={sc.name}>{sc.name}</option>
                 ))}
               </select>
 
-              {/* ✅ Bouton toujours visible pour ouvrir le formulaire d'ajout */}
               <button
                 onClick={() => { setShowAddSubCourse(v => !v); setNewSubCourse(""); }}
-                className="flex items-center gap-1 px-4 py-2 rounded-lg border transition-colors flex-shrink-0"
+                disabled={!courseId}
+                className="flex items-center gap-1 px-4 py-2 rounded-lg border transition-colors flex-shrink-0 disabled:opacity-40 disabled:cursor-not-allowed"
                 style={{
                   background: showAddSubCourse ? "#f3f4f6" : "#4f46e5",
                   borderColor: showAddSubCourse ? "#d1d5db" : "#4f46e5",
-                  color: showAddSubCourse ? "#4b5563" : "white"
+                  color: showAddSubCourse ? "#4b5563" : "white",
                 }}
               >
                 {showAddSubCourse ? <X className="w-4 h-4" /> : <Plus className="w-4 h-4" />}
@@ -417,10 +486,12 @@ export default function QuestionDetailPage() {
               </button>
             </div>
 
-            {/* ✅ Formulaire d'ajout — visible seulement si showAddSubCourse */}
-            {showAddSubCourse && (
+            {/* Formulaire d'ajout */}
+            {showAddSubCourse && courseId && (
               <div className="mt-3 p-4 border border-indigo-200 rounded-lg bg-indigo-50">
-                <p className="text-sm text-indigo-700 font-medium mb-2">Nouveau sous-cours</p>
+                <p className="text-sm text-indigo-700 font-medium mb-2">
+                  Nouveau sous-cours pour <strong>{metadata.objective}</strong>
+                </p>
                 <div className="flex gap-2">
                   <input
                     type="text"
@@ -433,17 +504,13 @@ export default function QuestionDetailPage() {
                   />
                   <button
                     onClick={handleAddSubCourse}
-                    disabled={addingSubCourse}
-                    className="px-4 py-2 text-white rounded-lg disabled:opacity-50 disabled:cursor-not-allowed transition-colors" style={{background: "#4f46e5"}}                  >
+                    disabled={addingSubCourse || !newSubCourse.trim()}
+                    className="px-4 py-2 text-white rounded-lg disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                    style={{ background: "#4f46e5" }}
+                  >
                     {addingSubCourse ? "..." : "Ajouter"}
                   </button>
                 </div>
-              </div>
-            )}
-
-            {subCourses.length > 0 && (
-              <div className="mt-2 text-xs text-gray-500">
-                {subCourses.length} sous-cours disponible{subCourses.length > 1 ? "s" : ""}
               </div>
             )}
           </div>
