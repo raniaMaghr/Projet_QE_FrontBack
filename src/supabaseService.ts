@@ -1,4 +1,4 @@
-import { supabase } from './supabaseClient';
+import { supabase } from './lib/supabaseClient';
 import { QCMEntry, SeriesMetadata } from './types/qcm.types';
 
 export interface SupabaseSeries {

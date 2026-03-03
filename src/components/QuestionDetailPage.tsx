@@ -3,7 +3,7 @@ import { useParams, useNavigate } from "react-router-dom";
 import { QCMEntry, SeriesMetadata } from "../types";
 import { ArrowLeft, Save, ChevronLeft, ChevronRight, Trash2, Plus, X } from "lucide-react";
 import { toast } from "sonner";
-import { supabase } from "../supabaseClient";
+import { supabase } from "../lib/supabaseClient";
 import {
   getQuestionsBySeriesId,
   updateQuestion,
@@ -35,6 +35,9 @@ export default function QuestionDetailPage() {
   const [addingSubCourse, setAddingSubCourse] = useState(false);
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
   const [loading, setLoading] = useState(true);
+  
+  const [seriesId, setSeriesId] = useState<string | null>(null);
+
 
   useEffect(() => {
     if (!questionId) return;
@@ -56,8 +59,7 @@ export default function QuestionDetailPage() {
         }
 
         const foundSeriesId: string = qData.series_id;
-
-        // 2. Récupérer la série et ses métadonnées
+        setSeriesId(foundSeriesId);
         const series = await getSeriesById(foundSeriesId);
         if (series) {
           const meta = convertSupabaseSeriesToMetadata(series);
@@ -181,11 +183,14 @@ export default function QuestionDetailPage() {
 
   const handleSave = async () => {
     try {
-      for (const q of questions) {
-        await updateQuestion(q.id, q);
-      }
+      await updateQuestion(currentQ.id, {
+        ...currentQ,
+        tags: currentQ.tags && currentQ.tags.length > 0 ? currentQ.tags : ["Clinique"],
+      });
+
       toast.success("✅ Modifications sauvegardées");
       setHasUnsavedChanges(false);
+      navigate("/dashboard");
     } catch (err) {
       console.error("Erreur sauvegarde:", err);
       toast.error("Erreur lors de la sauvegarde");

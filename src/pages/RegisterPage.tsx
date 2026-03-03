@@ -122,7 +122,7 @@ export function RegisterPage() {
         faculty: formData.faculty as Faculte,
         year: formData.year as AnneeEtude,
       });
-      navigate('/dashboard');
+      navigate('/login');
     } catch (err: any) {
       setError(err.message || 'Une erreur est survenue lors de l\'inscription');
     } finally {

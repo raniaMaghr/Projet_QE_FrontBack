@@ -1,37 +1,8 @@
-/**
- * Contexte d'authentification avec Supabase
- */
-
 import React, { createContext, useContext, useState, useEffect, useRef, ReactNode } from 'react';
+import { supabase } from '../lib/supabaseClient';
 import { User } from '../types';
 import { Faculte, AnneeEtude } from '../types/qcm.types';
-import { supabase } from '../lib/supabase';
-import {
-  mapSupabaseProfileToUser,
-  getUserPreferences,
-  FACULTY_TO_SUPABASE,
-  YEAR_TO_NUMBER,
-} from '../types/supabase-mapping';
-import type { User as SupabaseUser, Session } from '@supabase/supabase-js';
-
-// ─────────────────────────────────────────────
-// Suppression globale des AbortError Supabase
-// ─────────────────────────────────────────────
-if (typeof window !== 'undefined') {
-  window.addEventListener('unhandledrejection', (event) => {
-    if (
-      event?.reason?.name === 'AbortError' ||
-      event?.reason?.message?.includes('aborted') ||
-      event?.reason?.message?.includes('AbortError')
-    ) {
-      event.preventDefault();
-    }
-  });
-}
-
-// ─────────────────────────────────────────────
-// Types
-// ─────────────────────────────────────────────
+import type { User as SupabaseUser } from '@supabase/supabase-js';
 
 interface RegisterData {
   email: string;
@@ -54,216 +25,157 @@ interface AuthContextType {
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
-// ─────────────────────────────────────────────
-// ✅ Détection AbortError robuste :
-//    l'erreur Supabase a name=undefined mais message contient 'AbortError'
-// ─────────────────────────────────────────────
-const isAbortError = (error: any): boolean => {
-  if (!error) return false;
-  const msg = error?.message ?? '';
-  const details = error?.details ?? '';
-  const hint = error?.hint ?? '';
-  return (
-    error?.name === 'AbortError' ||
-    msg.includes('AbortError') ||
-    msg.includes('aborted') ||
-    details.includes('AbortError') ||
-    hint.includes('aborted') ||
-    hint.includes('cancellation')
-  );
-};
-
-// ─────────────────────────────────────────────
-// Provider
-// ─────────────────────────────────────────────
+// Flag sessionStorage : présent uniquement si login manuel fait dans cet onglet/session
+const SESSION_FLAG = 'app_session_active';
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
   const mountedRef = useRef(true);
+  const isManualLoginRef = useRef(false);
 
-  // ─── Chargement du profil avec retry ────────
+  const loadProfile = (supabaseUser: SupabaseUser): User => {
+    const minimalUser = {
+      id: supabaseUser.id,
+      email: supabaseUser.email!,
+    } as User;
 
-  const loadProfile = async (supabaseUser: SupabaseUser, retries = 3): Promise<User | null> => {
-    for (let attempt = 1; attempt <= retries; attempt++) {
-      try {
-        console.log(`👤 loadProfile() tentative ${attempt}/${retries} — id:`, supabaseUser.id);
-
-        const { data: profile, error } = await supabase
-          .from('profiles')
-          .select('*')
-          .eq('id', supabaseUser.id)
-          .single();
-
-        if (error) {
-          // ✅ Vrai AbortError → on réessaie
-          if (isAbortError(error)) {
-            console.log(`👤 loadProfile() — AbortError tentative ${attempt}, on réessaie...`);
-            if (attempt < retries) {
-              await new Promise(r => setTimeout(r, 300 * attempt));
-              continue;
-            }
-            console.warn('👤 loadProfile() — trop d\'AbortError, abandon');
-            return null;
-          }
-
-          // Profil inexistant → créer
-          if (error.code === 'PGRST116') {
-            console.log('👤 loadProfile() — profil inexistant, création...');
-            await supabase.from('profiles').insert({ id: supabaseUser.id });
-            await new Promise(r => setTimeout(r, 300));
-            continue;
-          }
-
-          console.error('👤 loadProfile() — erreur:', error.code, error.message);
-          setUser(null);
-          return null;
-        }
-
-        if (profile) {
-          const userData = mapSupabaseProfileToUser(profile, supabaseUser.email!);
-          console.log('✅ loadProfile() — succès');
-          setUser(userData);
-          return userData;
-        }
-
-      } catch (err: any) {
-        console.error('👤 loadProfile() — exception:', err?.message);
-        if (attempt < retries) {
-          await new Promise(r => setTimeout(r, 300 * attempt));
-        }
-      }
+    if (mountedRef.current) {
+      setUser(minimalUser);
+      setLoading(false);
     }
 
-    console.error('👤 loadProfile() — échec après', retries, 'tentatives');
-    setUser(null);
-    return null;
+    return minimalUser;
   };
-
-  // ─── Init auth ───────────────────────────────
 
   useEffect(() => {
     mountedRef.current = true;
 
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(
-      async (event, session) => {
-        console.log('🔑 onAuthStateChange —', event);
-        if (!mountedRef.current) return;
+    const initAuth = async () => {
+      setLoading(true);
+      try {
+        const { data: { session }, error } = await supabase.auth.getSession();
+        if (error) console.error('Erreur getSession:', error);
 
         if (session?.user) {
-          await loadProfile(session.user);
+          // ✅ Session Supabase existante MAIS on vérifie si login fait dans cette session navigateur
+          const sessionActive = sessionStorage.getItem(SESSION_FLAG);
+          if (sessionActive) {
+            // Refresh normal → rester connecté
+            loadProfile(session.user);
+          } else {
+            // Nouvel onglet ou nouvelle session navigateur → forcer login
+            setUser(null);
+            setLoading(false);
+          }
         } else {
           setUser(null);
+          setLoading(false);
         }
-
-        if (mountedRef.current) setLoading(false);
+      } catch (err) {
+        console.error('Erreur initAuth:', err);
+        setUser(null);
+        setLoading(false);
       }
-    );
+    };
+
+    initAuth().then(() => {
+      const { data: { subscription } } = supabase.auth.onAuthStateChange(
+        (event, session) => {
+          if (!mountedRef.current) return;
+
+          if (event === 'SIGNED_IN' && session?.user) {
+            if (isManualLoginRef.current) {
+              loadProfile(session.user);
+              isManualLoginRef.current = false;
+            }
+          }
+
+          if (event === 'SIGNED_OUT') {
+            sessionStorage.removeItem(SESSION_FLAG);
+            setUser(null);
+            setLoading(false);
+          }
+        }
+      );
+
+      return () => subscription.unsubscribe();
+    });
 
     return () => {
       mountedRef.current = false;
-      subscription.unsubscribe();
     };
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, []);
 
-  // ─── Connexion ───────────────────────────────
-
+  // ─── Login ─────────────
   const login = async (email: string, password: string) => {
-    const { data, error } = await supabase.auth.signInWithPassword({ email, password });
-    if (error) throw error;
-    // onAuthStateChange + loadProfile avec retry gèrent le reste
-    if (data.user) await loadProfile(data.user);
-  };
+    isManualLoginRef.current = true;
 
-  // ─── Inscription ─────────────────────────────
+    const { data, error } = await supabase.auth.signInWithPassword({
+      email: email.trim(),
+      password: password.trim(),
+    });
 
-  const register = async (data: RegisterData) => {
-    try {
-      setLoading(true);
-
-      const { data: authData, error: authError } = await supabase.auth.signUp({
-        email: data.email,
-        password: data.password,
-      });
-      if (authError) throw authError;
-      if (!authData?.user) throw new Error('Erreur lors de la création du compte');
-
-      let profileExists = false;
-      let attempts = 0;
-      while (!profileExists && attempts < 10) {
-        attempts++;
-        const { data: checkProfile } = await supabase
-          .from('profiles').select('id').eq('id', authData.user.id).maybeSingle();
-        if (checkProfile) profileExists = true;
-        else await new Promise(r => setTimeout(r, 500));
-      }
-
-      if (!profileExists) {
-        const { error: insertError } = await supabase
-          .from('profiles').insert({ id: authData.user.id });
-        if (insertError && insertError.code !== '23505') throw insertError;
-      }
-
-      const { error: profileError } = await supabase
-        .from('profiles')
-        .update({
-          first_name: data.firstName,
-          last_name: data.lastName,
-          faculty: FACULTY_TO_SUPABASE[data.faculty],
-          year: YEAR_TO_NUMBER[data.year],
-        })
-        .eq('id', authData.user.id);
-      if (profileError) throw profileError;
-
-      await loadProfile(authData.user);
-    } catch (error: any) {
-      throw new Error(error.message || "Erreur lors de l'inscription");
-    } finally {
-      setLoading(false);
+    if (error) {
+      isManualLoginRef.current = false;
+      throw error;
     }
+
+    if (!data.user) {
+      isManualLoginRef.current = false;
+      throw new Error('Aucun utilisateur retourné');
+    }
+
+    // ✅ Marquer que le login a été fait dans cette session navigateur
+    sessionStorage.setItem(SESSION_FLAG, 'true');
   };
 
-  // ─── Déconnexion ─────────────────────────────
+  // ─── Register ─────────────
+  const register = async (data: RegisterData) => {
+    const { data: authData, error: authError } = await supabase.auth.signUp({
+      email: data.email,
+      password: data.password,
+    });
 
+    if (authError) throw authError;
+    if (!authData?.user) throw new Error('Erreur création compte');
+  };
+
+  // ─── Logout ─────────────
   const logout = async () => {
     try {
-      setLoading(true);
       await supabase.auth.signOut();
+    } catch (err) {
+      console.error('Erreur logout:', err);
+      sessionStorage.removeItem(SESSION_FLAG);
       setUser(null);
-    } catch (error) {
-      setUser(null);
-    } finally {
       setLoading(false);
     }
   };
 
-  // ─── Mise à jour utilisateur ──────────────────
-
+  // ─── Update user ─────────────
   const updateUser = async (userData: Partial<User>) => {
     if (!user) return;
     const previousUser = user;
     try {
-      const updatedUser = { ...user, ...userData };
-      setUser(updatedUser);
-      const preferences = getUserPreferences(updatedUser);
-      const { error } = await supabase
-        .from('profiles').update({ preferences }).eq('id', user.id);
-      if (error) setUser(previousUser);
+      setUser({ ...user, ...userData });
     } catch {
       setUser(previousUser);
     }
   };
 
+  const value: AuthContextType = {
+    user,
+    isAuthenticated: !!user,
+    loading,
+    login,
+    register,
+    logout,
+    updateUser,
+  };
+
   return (
-    <AuthContext.Provider value={{
-      user,
-      isAuthenticated: !!user,
-      loading,
-      login,
-      register,
-      logout,
-      updateUser,
-    }}>
+    <AuthContext.Provider value={value}>
       {children}
     </AuthContext.Provider>
   );
@@ -271,8 +183,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
 export function useAuth() {
   const context = useContext(AuthContext);
-  if (context === undefined) {
-    throw new Error("useAuth doit être utilisé à l'intérieur d'un AuthProvider");
-  }
+  if (!context) throw new Error('useAuth doit être utilisé dans AuthProvider');
   return context;
 }

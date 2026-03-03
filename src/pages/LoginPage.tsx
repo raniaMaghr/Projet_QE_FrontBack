@@ -1,7 +1,6 @@
 /**
- * Page de connexion
+ * Page de connexion - VERSION CORRIGÉE
  */
-
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion } from 'motion/react';
@@ -22,44 +21,39 @@ import {
 import brainIllustration from 'figma:asset/8bbf05d78c8c01c04ddbd6460f4d0f9ab0303685.png';
 
 export function LoginPage() {
-  const navigate = useNavigate();
-  const { login, isAuthenticated, loading } = useAuth();
-  const [showPassword, setShowPassword] = useState(false);
-  const [formLoading, setFormLoading] = useState(false);
-  const [error, setError] = useState('');
-  const [formData, setFormData] = useState({
-    email: '',
-    password: ''
-  });
-
-  // ✅ Redirection automatique dès que isAuthenticated devient true
-  // Fonctionne que la redirection vienne du login ou d'un refresh de page
-  useEffect(() => {
-    if (!loading && isAuthenticated) {
-      navigate('/dashboard', { replace: true });
-    }
-  }, [isAuthenticated, loading, navigate]);
-
-  const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    setFormData({ ...formData, [e.target.name]: e.target.value });
-    setError('');
-  };
-
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setError('');
-    setFormLoading(true);
-
-    try {
-      await login(formData.email, formData.password);
-      // ✅ Pas de navigate() ici — le useEffect s'en charge
-      // quand isAuthenticated passera à true
-    } catch (err) {
-      setError('Email ou mot de passe incorrect');
-    } finally {
-      setFormLoading(false);
-    }
-  };
+    const navigate = useNavigate();
+    const { login, isAuthenticated, loading } = useAuth();
+    
+    const [showPassword, setShowPassword] = useState(false);
+    const [formLoading, setFormLoading] = useState(false);
+    const [error, setError] = useState('');
+    const [formData, setFormData] = useState({ email: '', password: '' });
+  
+    // ✅ Fonction manquante ajoutée
+    const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+      setFormData({ ...formData, [e.target.name]: e.target.value });
+      setError('');
+    };
+  
+    useEffect(() => {
+      if (!loading && isAuthenticated) {
+        navigate('/dashboard', { replace: true });
+      }
+    }, [isAuthenticated, loading, navigate]);
+  
+    const handleSubmit = async (e: React.FormEvent) => {
+      e.preventDefault();
+      setError('');
+      setFormLoading(true);
+      try {
+        await login(formData.email, formData.password);
+      } catch (err: any) {
+        setError(err.message || 'Erreur de connexion');
+      } finally {
+        setFormLoading(false);
+      }
+    };
+    // ... reste du JSX inchangé
 
   return (
     <div className="min-h-screen" style={{ background: 'linear-gradient(135deg, #f8fafc 0%, #e2e8f0 25%, #cbd5e1 50%, #e2e8f0 75%, #f8fafc 100%)' }}>
