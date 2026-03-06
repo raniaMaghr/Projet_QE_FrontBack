@@ -4,7 +4,7 @@ import { QCMEntry } from "../types/qcm.types";
 import { toast } from "sonner";
 import { useNavigate } from "react-router-dom";
 import { syncLocalDataToSupabase } from "../supabaseService";
-import { supabase } from "../lib/supabaseClient"; // adapte le chemin si nécessaire
+import { supabase } from "../supabaseClient"; // adapte le chemin si nécessaire
 
 interface UploadPageProps {
   onSeriesUploaded: (data: {

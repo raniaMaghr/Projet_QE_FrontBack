@@ -1,4 +1,4 @@
-import { supabase } from './lib/supabaseClient';
+import { supabase } from './supabaseClient';
 import { QCMEntry, SeriesMetadata } from './types/qcm.types';
 
 export interface SupabaseSeries {
@@ -22,6 +22,8 @@ export interface SupabaseQuestion {
   tags: string[];
   sub_course: string | null;
   clinical_case_id: string | null;
+  
+  image_url: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -161,6 +163,7 @@ export async function updateQuestion(questionId: string, updates: Partial<QCMEnt
   if (updates.tags !== undefined) updateData.tags = updates.tags;
   if (updates.subCourse !== undefined) updateData.sub_course = updates.subCourse;
   if (updates.clinicalCaseId !== undefined) updateData.clinical_case_id = updates.clinicalCaseId;
+  if (updates.imageUrl !== undefined) updateData.image_url = updates.imageUrl;
 
   const { error } = await supabase
     .from('qcm_questions')
@@ -232,6 +235,8 @@ export function convertSupabaseQuestionToQCMEntry(sq: SupabaseQuestion): QCMEntr
     tags: sq.tags,
     subCourse: sq.sub_course,
     clinicalCaseId: sq.clinical_case_id ?? undefined,
+    imageUrl: sq.image_url ?? null,
+
     createdAt: sq.created_at,
     updatedAt: sq.updated_at,
   };

@@ -108,6 +108,7 @@ export interface QCMEntry {
   tags?: string[];
   subCourse?: string | null;
   clinicalCaseId?: string;
+  imageUrl?: string | null;
   updatedAt?: string;
   createdAt: string;
 }

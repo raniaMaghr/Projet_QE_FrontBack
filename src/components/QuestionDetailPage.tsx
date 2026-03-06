@@ -1,9 +1,9 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { QCMEntry, SeriesMetadata } from "../types";
-import { ArrowLeft, Save, ChevronLeft, ChevronRight, Trash2, Plus, X } from "lucide-react";
+import { ArrowLeft, Save, ChevronLeft, ChevronRight, Trash2, Plus, X, ImagePlus } from "lucide-react";
 import { toast } from "sonner";
-import { supabase } from "../lib/supabaseClient";
+import { supabase } from "../supabaseClient";
 import {
   getQuestionsBySeriesId,
   updateQuestion,
@@ -29,15 +29,20 @@ export default function QuestionDetailPage() {
   const [currentIndex, setCurrentIndex] = useState(0);
   const [metadata, setMetadata] = useState<SeriesMetadata | null>(null);
   const [subCourses, setSubCourses] = useState<SubCourse[]>([]);
-  const [courseId, setCourseId] = useState<string | null>(null); // ID du cours lié à l'objectif
+  const [courseId, setCourseId] = useState<string | null>(null);
   const [newSubCourse, setNewSubCourse] = useState("");
   const [showAddSubCourse, setShowAddSubCourse] = useState(false);
   const [addingSubCourse, setAddingSubCourse] = useState(false);
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
   const [loading, setLoading] = useState(true);
-  
   const [seriesId, setSeriesId] = useState<string | null>(null);
 
+  // ── Image states ──────────────────────────────────────────────────────────
+  const [imageFile, setImageFile] = useState<File | null>(null);
+  const [imagePreview, setImagePreview] = useState<string | null>(null);
+  const [uploadingImage, setUploadingImage] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  // ─────────────────────────────────────────────────────────────────────────
 
   useEffect(() => {
     if (!questionId) return;
@@ -45,7 +50,6 @@ export default function QuestionDetailPage() {
     const fetchData = async () => {
       setLoading(true);
       try {
-        // 1. Récupérer la question pour avoir le series_id
         const { data: qData, error: qError } = await supabase
           .from("qcm_questions")
           .select("*")
@@ -60,12 +64,12 @@ export default function QuestionDetailPage() {
 
         const foundSeriesId: string = qData.series_id;
         setSeriesId(foundSeriesId);
+
         const series = await getSeriesById(foundSeriesId);
         if (series) {
           const meta = convertSupabaseSeriesToMetadata(series);
           setMetadata(meta);
 
-          // 3. Trouver le course_id à partir du nom de l'objectif (meta.objective)
           const { data: courseData, error: courseError } = await supabase
             .from("courses")
             .select("id, name")
@@ -75,15 +79,12 @@ export default function QuestionDetailPage() {
           if (!courseError && courseData) {
             const foundCourseId = courseData.id;
             setCourseId(foundCourseId);
-
-            // 4. Charger les sous-cours liés à ce cours
             await fetchSubCourses(foundCourseId);
           } else {
             console.warn("Cours introuvable pour l'objectif:", meta.objective);
           }
         }
 
-        // 5. Charger toutes les questions de la série
         const supabaseQuestions = await getQuestionsBySeriesId(foundSeriesId);
         const converted = supabaseQuestions.map(convertSupabaseQuestionToQCMEntry);
 
@@ -92,6 +93,11 @@ export default function QuestionDetailPage() {
           toast.error("Question introuvable dans la série");
           setLoading(false);
           return;
+        }
+
+        // Initialiser l'aperçu avec l'image existante si elle existe
+        if (clickedQ.imageUrl) {
+          setImagePreview(clickedQ.imageUrl);
         }
 
         if (clickedQ.clinicalCaseId) {
@@ -114,7 +120,6 @@ export default function QuestionDetailPage() {
     fetchData();
   }, [questionId]);
 
-  // Charger les sous-cours filtrés par course_id
   const fetchSubCourses = async (cid: string) => {
     const { data, error } = await supabase
       .from("sub_courses")
@@ -181,10 +186,63 @@ export default function QuestionDetailPage() {
     });
   };
 
+  // ── Sélection d'image depuis le PC ────────────────────────────────────────
+  const handleImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    if (!file.type.startsWith("image/")) {
+      toast.error("Veuillez sélectionner une image (PNG, JPG, GIF...)");
+      return;
+    }
+    if (file.size > 5 * 1024 * 1024) {
+      toast.error("Image trop lourde — maximum 5 Mo");
+      return;
+    }
+
+    setImageFile(file);
+    setImagePreview(URL.createObjectURL(file));
+    setHasUnsavedChanges(true);
+  };
+
+  const handleRemoveImage = () => {
+    setImageFile(null);
+    setImagePreview(null);
+    updateCurrentQuestion({ imageUrl: null });
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  };
+  // ─────────────────────────────────────────────────────────────────────────
+
   const handleSave = async () => {
     try {
+      let imageUrl: string | null = currentQ.imageUrl ?? null;
+
+      // Upload vers Supabase Storage si un nouveau fichier a été sélectionné
+      if (imageFile) {
+        setUploadingImage(true);
+        const ext = imageFile.name.split(".").pop();
+        const fileName = `${currentQ.id}-${Date.now()}.${ext}`;
+
+        const { error: uploadError } = await supabase.storage
+          .from("question-images")
+          .upload(fileName, imageFile, { upsert: true });
+
+        if (uploadError) throw uploadError;
+
+        const { data: urlData } = supabase.storage
+          .from("question-images")
+          .getPublicUrl(fileName);
+
+          console.log("✅ imageUrl générée:", urlData.publicUrl); // <-- ajoute ça
+          imageUrl = urlData.publicUrl;
+        imageUrl = urlData.publicUrl;
+        setUploadingImage(false);
+        setImageFile(null);
+      }
+
       await updateQuestion(currentQ.id, {
         ...currentQ,
+        imageUrl,
         tags: currentQ.tags && currentQ.tags.length > 0 ? currentQ.tags : ["Clinique"],
       });
 
@@ -194,10 +252,10 @@ export default function QuestionDetailPage() {
     } catch (err) {
       console.error("Erreur sauvegarde:", err);
       toast.error("Erreur lors de la sauvegarde");
+      setUploadingImage(false);
     }
   };
 
-  // Ajouter un sous-cours lié au course_id de l'objectif
   const handleAddSubCourse = async () => {
     const trimmed = newSubCourse.trim();
     if (!trimmed) {
@@ -297,9 +355,14 @@ export default function QuestionDetailPage() {
                   {metadata.objective} • {metadata.faculty} • {metadata.year}
                 </div>
               </div>
-              <button onClick={handleSave} className="flex items-center gap-2 px-4 py-2 text-white rounded-lg transition-colors" style={{ background: "#16a34a" }}>
+              <button
+                onClick={handleSave}
+                disabled={uploadingImage}
+                className="flex items-center gap-2 px-4 py-2 text-white rounded-lg transition-colors disabled:opacity-60"
+                style={{ background: "#16a34a" }}
+              >
                 <Save className="w-4 h-4" />
-                Sauvegarder
+                {uploadingImage ? "Upload image..." : "Sauvegarder"}
               </button>
             </div>
 
@@ -358,6 +421,224 @@ export default function QuestionDetailPage() {
             />
             <div className="mt-1 text-xs text-gray-500">{currentQ.question.length} caractères</div>
           </div>
+
+          {/* ── IMAGE UPLOAD — PRO DESIGN ──────────────────────────────────── */}
+          <div className="mb-6">
+            <label className="block mb-3 text-gray-700 font-medium">Image de la question</label>
+
+            {/* Hidden file input */}
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="image/*"
+              onChange={handleImageChange}
+              className="hidden"
+            />
+
+            {imagePreview ? (
+              /* ── Preview card ── */
+              <div
+                style={{
+                  display: "inline-flex",
+                  flexDirection: "column",
+                  maxWidth: "100%",
+                  borderRadius: "16px",
+                  overflow: "hidden",
+                  border: "1px solid #e5e7eb",
+                  boxShadow: "0 4px 24px rgba(79,70,229,0.08)",
+                  background: "#f9fafb",
+                }}
+              >
+                {/* Image wrapper */}
+                <div style={{ position: "relative" }}>
+                  <img
+                    src={imagePreview}
+                    alt="Aperçu"
+                    style={{
+                      display: "block",
+                      maxHeight: "288px",
+                      maxWidth: "100%",
+                      objectFit: "contain",
+                    }}
+                  />
+                  {/* Top gradient for button legibility */}
+                  <div
+                    style={{
+                      position: "absolute",
+                      inset: 0,
+                      background: "linear-gradient(to bottom, rgba(0,0,0,0.22) 0%, transparent 38%)",
+                      pointerEvents: "none",
+                    }}
+                  />
+                  {/* Remove button */}
+                  <button
+                    onClick={handleRemoveImage}
+                    title="Supprimer l'image"
+                    style={{
+                      position: "absolute",
+                      top: "10px",
+                      right: "10px",
+                      width: "30px",
+                      height: "30px",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      background: "rgba(220,38,38,0.9)",
+                      border: "none",
+                      borderRadius: "50%",
+                      cursor: "pointer",
+                      boxShadow: "0 2px 8px rgba(220,38,38,0.3)",
+                      color: "white",
+                      zIndex: 2,
+                      transition: "transform 0.15s, background 0.15s",
+                    }}
+                    onMouseEnter={e => {
+                      (e.currentTarget as HTMLButtonElement).style.transform = "scale(1.12)";
+                      (e.currentTarget as HTMLButtonElement).style.background = "#b91c1c";
+                    }}
+                    onMouseLeave={e => {
+                      (e.currentTarget as HTMLButtonElement).style.transform = "scale(1)";
+                      (e.currentTarget as HTMLButtonElement).style.background = "rgba(220,38,38,0.9)";
+                    }}
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+
+                {/* Footer action bar */}
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                    padding: "10px 14px",
+                    background: "white",
+                    borderTop: "1px solid #f3f4f6",
+                  }}
+                >
+                  <div style={{ display: "flex", alignItems: "center", gap: "7px" }}>
+                    <span
+                      style={{
+                        width: "7px",
+                        height: "7px",
+                        borderRadius: "50%",
+                        background: "#22c55e",
+                        display: "inline-block",
+                        boxShadow: "0 0 0 3px rgba(34,197,94,0.15)",
+                      }}
+                    />
+                    <span style={{ fontSize: "12px", color: "#6b7280", fontWeight: 500 }}>
+                      Image chargée
+                    </span>
+                  </div>
+                  <button
+                    onClick={() => fileInputRef.current?.click()}
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: "6px",
+                      padding: "5px 13px",
+                      fontSize: "12px",
+                      fontWeight: 600,
+                      color: "#4f46e5",
+                      background: "#eef2ff",
+                      border: "1px solid #c7d2fe",
+                      borderRadius: "8px",
+                      cursor: "pointer",
+                      transition: "background 0.15s, border-color 0.15s",
+                    }}
+                    onMouseEnter={e => {
+                      (e.currentTarget as HTMLButtonElement).style.background = "#e0e7ff";
+                      (e.currentTarget as HTMLButtonElement).style.borderColor = "#a5b4fc";
+                    }}
+                    onMouseLeave={e => {
+                      (e.currentTarget as HTMLButtonElement).style.background = "#eef2ff";
+                      (e.currentTarget as HTMLButtonElement).style.borderColor = "#c7d2fe";
+                    }}
+                  >
+                    <ImagePlus className="w-3.5 h-3.5" />
+                    Remplacer
+                  </button>
+                </div>
+              </div>
+            ) : (
+              /* ── Drop zone ── */
+              <div
+                onClick={() => fileInputRef.current?.click()}
+                role="button"
+                tabIndex={0}
+                onKeyDown={e => e.key === "Enter" && fileInputRef.current?.click()}
+                style={{
+                  position: "relative",
+                  display: "flex",
+                  flexDirection: "column",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  gap: "14px",
+                  padding: "52px 24px",
+                  borderRadius: "16px",
+                  border: "2px dashed #d1d5db",
+                  background: "linear-gradient(145deg, #fafafa 0%, #f4f4f5 100%)",
+                  cursor: "pointer",
+                  overflow: "hidden",
+                  transition: "border-color 0.2s, background 0.2s",
+                  outline: "none",
+                }}
+                onMouseEnter={e => {
+                  const el = e.currentTarget as HTMLDivElement;
+                  el.style.borderColor = "#818cf8";
+                  el.style.background = "linear-gradient(145deg, #eef2ff 0%, #e0e7ff 100%)";
+                }}
+                onMouseLeave={e => {
+                  const el = e.currentTarget as HTMLDivElement;
+                  el.style.borderColor = "#d1d5db";
+                  el.style.background = "linear-gradient(145deg, #fafafa 0%, #f4f4f5 100%)";
+                }}
+                onFocus={e => { (e.currentTarget as HTMLDivElement).style.borderColor = "#818cf8"; }}
+                onBlur={e => { (e.currentTarget as HTMLDivElement).style.borderColor = "#d1d5db"; }}
+              >
+                {/* Decorative blobs */}
+                <div style={{
+                  position: "absolute", width: "140px", height: "140px", borderRadius: "50%",
+                  background: "radial-gradient(circle, rgba(99,102,241,0.08) 0%, transparent 70%)",
+                  top: "-40px", right: "-40px", pointerEvents: "none",
+                }} />
+                <div style={{
+                  position: "absolute", width: "100px", height: "100px", borderRadius: "50%",
+                  background: "radial-gradient(circle, rgba(139,92,246,0.07) 0%, transparent 70%)",
+                  bottom: "-30px", left: "-30px", pointerEvents: "none",
+                }} />
+
+                {/* Icon container */}
+                <div
+                  style={{
+                    width: "56px",
+                    height: "56px",
+                    borderRadius: "16px",
+                    background: "linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%)",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    boxShadow: "0 6px 20px rgba(99,102,241,0.28)",
+                    flexShrink: 0,
+                  }}
+                >
+                  <ImagePlus style={{ width: "26px", height: "26px", color: "white" }} />
+                </div>
+
+                {/* Text */}
+                <div style={{ textAlign: "center", zIndex: 1 }}>
+                  <p style={{ margin: 0, fontSize: "14px", fontWeight: 600, color: "#374151", lineHeight: 1.4 }}>
+                    Cliquez pour ajouter une image
+                  </p>
+                  <p style={{ margin: "5px 0 0", fontSize: "12px", color: "#9ca3af" }}>
+                    PNG, JPG, GIF · max 5 Mo
+                  </p>
+                </div>
+              </div>
+            )}
+          </div>
+          {/* ──────────────────────────────────────────────────────────────── */}
 
           {/* Options */}
           <div className="mb-6">
@@ -447,11 +728,10 @@ export default function QuestionDetailPage() {
             )}
           </div>
 
-          {/* Sous-cours — filtrés par l'objectif de la série */}
+          {/* Sous-cours */}
           <div className="mb-6">
             <label className="block mb-1 text-gray-700 font-medium">Sous-cours</label>
 
-            {/* Contexte : objectif lié */}
             {courseId ? (
               <p className="text-xs text-indigo-600 mb-3">
                 📚 Sous-cours de : <strong>{metadata.objective}</strong> ({subCourses.length} disponible{subCourses.length > 1 ? "s" : ""})
@@ -462,7 +742,6 @@ export default function QuestionDetailPage() {
               </p>
             )}
 
-            {/* Sélecteur + bouton Nouveau */}
             <div className="flex gap-2">
               <select
                 value={currentQ.subCourse || ""}
@@ -491,7 +770,6 @@ export default function QuestionDetailPage() {
               </button>
             </div>
 
-            {/* Formulaire d'ajout */}
             {showAddSubCourse && courseId && (
               <div className="mt-3 p-4 border border-indigo-200 rounded-lg bg-indigo-50">
                 <p className="text-sm text-indigo-700 font-medium mb-2">

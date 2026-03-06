@@ -1,7 +1,3 @@
-/**
- * Point d'entrée principal de l'application
- * Gère le routing avec React Router et les providers de contexte
- */
 
 import React from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
@@ -21,11 +17,6 @@ import { Toaster } from './components/ui/sonner';
 import UploadPage from './components/UploadPage';
 import SeriesPageWrapper from './pages/SeriesPageWrapper';
 import QuestionDetailPage from './components/QuestionDetailPage';
-
-// ─────────────────────────────────────────────
-// Routes protégées (nécessitent d'être connecté)
-// Affiche un spinner UNIQUEMENT pendant la vérification initiale
-// ─────────────────────────────────────────────
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { isAuthenticated, loading } = useAuth();
 
@@ -43,19 +34,9 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
 
   return <>{children}</>;
 }
-
-// ─────────────────────────────────────────────
-// Routes publiques (redirige si déjà connecté)
-// ✅ PAS de spinner ici : on affiche la page directement
-//    et on redirige seulement quand on sait que l'user est connecté.
-//    Évite le spinner infini si loading ne passe jamais à false.
-// ─────────────────────────────────────────────
 function PublicRoute({ children }: { children: React.ReactNode }) {
   const { isAuthenticated, loading } = useAuth();
 
-  // ✅ Si encore en chargement → on affiche la page publique directement
-  // (pas de spinner, pas de redirect prématurée)
-  // Une fois loading=false, si connecté → redirect vers dashboard
   if (!loading && isAuthenticated) {
     return <Navigate to="/dashboard" replace />;
   }
