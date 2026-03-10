@@ -34,6 +34,8 @@ interface EditableQuestion extends QCMEntry {
   _deleted?: boolean;
   _imageFile?: File | null;
   _imagePreview?: string | null;
+  // Flag to track if user explicitly removed an existing image
+  _imageRemoved?: boolean;
 }
 
 export default function SeriesEditPage() {
@@ -99,14 +101,20 @@ export default function SeriesEditPage() {
 
         // Questions
         const raw = await getQuestionsBySeriesId(seriesId);
+console.log("Premier question raw:", JSON.stringify(raw[0], null, 2));
         const converted: EditableQuestion[] = raw.map(q => {
           const entry = convertSupabaseQuestionToQCMEntry(q);
+          // ✅ FIX: Correctly initialize image state from DB
+          // _imagePreview shows the current image (from DB URL or new file)
+          // _imageFile is null until user selects a new file
+          // _imageRemoved tracks if user explicitly clicked "remove"
           return {
             ...entry,
             _isNew:        false,
             _deleted:      false,
             _imageFile:    null,
             _imagePreview: entry.imageUrl || null,
+            _imageRemoved: false,
           };
         });
         setQuestions(converted);
@@ -122,7 +130,6 @@ export default function SeriesEditPage() {
   }, [seriesId]);
 
   // ── Mise à jour d'une question dans le state ─────────────────────────────
-  // On utilise currentId (primitif stable) plutôt que currentQ (objet, closure stale)
   const updateCurrentQuestion = (updates: Partial<EditableQuestion>) => {
     if (!currentId) return;
     setQuestions(prev =>
@@ -134,7 +141,7 @@ export default function SeriesEditPage() {
     );
   };
 
-  // ── Navigation — NE supprime PAS les modifications, change juste de question
+  // ── Navigation ────────────────────────────────────────────────────────────
   const goTo = (id: string) => setCurrentId(id);
   const goPrev = () => {
     if (currentIndex > 0) goTo(activeQuestions[currentIndex - 1].id);
@@ -193,11 +200,22 @@ export default function SeriesEditPage() {
     if (!file) return;
     if (!file.type.startsWith("image/")) { toast.error("Image requise (PNG, JPG...)"); return; }
     if (file.size > 5 * 1024 * 1024)    { toast.error("Max 5 Mo"); return; }
-    updateCurrentQuestion({ _imageFile: file, _imagePreview: URL.createObjectURL(file) });
+    // ✅ FIX: Set new file + preview, mark as NOT removed
+    updateCurrentQuestion({
+      _imageFile:    file,
+      _imagePreview: URL.createObjectURL(file),
+      _imageRemoved: false,
+    });
   };
 
   const handleRemoveImage = () => {
-    updateCurrentQuestion({ _imageFile: null, _imagePreview: null, imageUrl: null });
+    // ✅ FIX: Mark image as removed so save knows to set imageUrl to null in DB
+    updateCurrentQuestion({
+      _imageFile:    null,
+      _imagePreview: null,
+      imageUrl:      null,
+      _imageRemoved: true,
+    });
     if (fileInputRef.current) fileInputRef.current.value = "";
   };
 
@@ -220,6 +238,7 @@ export default function SeriesEditPage() {
       _deleted:       false,
       _imageFile:     null,
       _imagePreview:  null,
+      _imageRemoved:  false,
     };
     setQuestions(prev => [...prev, newQ]);
     setCurrentId(newQ.id);
@@ -290,9 +309,14 @@ export default function SeriesEditPage() {
 
       // 3. Insérer ou mettre à jour les questions actives
       for (const q of questions.filter(q => !q._deleted)) {
-        // Upload image si nécessaire
-        let imageUrl: string | null = q.imageUrl ?? null;
+        // ✅ FIX: Determine final imageUrl correctly:
+        // - If user selected a new file → upload it and use new URL
+        // - If user removed the image (_imageRemoved) → set to null
+        // - Otherwise → keep the existing imageUrl from DB (no change)
+        let imageUrl: string | null;
+
         if (q._imageFile) {
+          // New file selected → upload
           setUploadingImage(true);
           const ext      = q._imageFile.name.split(".").pop();
           const fileName = `${q._isNew ? `new_${Date.now()}` : q.id}-${Date.now()}.${ext}`;
@@ -302,22 +326,28 @@ export default function SeriesEditPage() {
           if (upErr) throw upErr;
           imageUrl = supabase.storage.from("question-images").getPublicUrl(fileName).data.publicUrl;
           setUploadingImage(false);
+        } else if (q._imageRemoved) {
+          // User explicitly removed the image → null
+          imageUrl = null;
+        } else {
+          // No change → preserve existing imageUrl from DB
+          imageUrl = q.imageUrl ?? null;
         }
 
         if (q._isNew) {
           // INSERT
           const { error } = await supabase.from("qcm_questions").insert({
-            series_id:       seriesId,
-            question:        q.question,
-            options:         q.options,
-            correct_answers: q.correctAnswers,
-            tags:            q.tags ?? [],
-            sub_course:      q.subCourse ?? null,
+            series_id:        seriesId,
+            question:         q.question,
+            options:          q.options,
+            correct_answers:  q.correctAnswers,
+            tags:             q.tags ?? [],
+            sub_course:       q.subCourse ?? null,
             ai_justification: q.aiJustification ?? null,
-            type:            q.type ?? "QCM",
-            image_url:       imageUrl,
-            created_at:      new Date().toISOString(),
-            updated_at:      new Date().toISOString(),
+            type:             q.type ?? "QCM",
+            image_url:        imageUrl,
+            created_at:       new Date().toISOString(),
+            updated_at:       new Date().toISOString(),
           });
           if (error) throw error;
         } else {
@@ -330,7 +360,6 @@ export default function SeriesEditPage() {
             type:            q.type,
             tags:            q.tags ?? [],
             subCourse:       q.subCourse ?? null,
-            imageUrl:        imageUrl,
           });
         }
       }
@@ -374,7 +403,7 @@ export default function SeriesEditPage() {
   }
 
   const optionLetters = currentQ.options.map((_: string, i: number) => String.fromCharCode(65 + i));
-  const imagePreview  = currentQ._imagePreview ?? currentQ.imageUrl ?? null;
+  const imagePreview = currentQ._imagePreview || currentQ.imageUrl || null;
   const pendingCount  = questions.filter(q => !q._deleted).length;
 
   return (
@@ -516,7 +545,10 @@ export default function SeriesEditPage() {
                   </button>
                 </div>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 14px", background: "white", borderTop: "1px solid #f3f4f6" }}>
-                  <span style={{ fontSize: 12, color: "#6b7280" }}>✅ Image chargée</span>
+                  {/* ✅ FIX: Show whether image is from DB or newly uploaded */}
+                  <span style={{ fontSize: 12, color: "#6b7280" }}>
+                    {currentQ._imageFile ? "✅ Nouvelle image sélectionnée" : "🖼️ Image existante (BD)"}
+                  </span>
                   <button onClick={() => fileInputRef.current?.click()}
                     style={{ fontSize: 12, color: "#4f46e5", background: "#eef2ff", border: "1px solid #c7d2fe", borderRadius: 8, padding: "4px 12px", cursor: "pointer" }}>
                     Remplacer

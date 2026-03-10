@@ -12,7 +12,7 @@ import {
   convertSupabaseSeriesToMetadata,
 } from "../supabaseService";
 
-const TAGS = ["Clinique", "Anatomie", "Biologie", "Physiologie", "Épidémiologie"];
+const TAGS = ["Clinique", "Anatomie", "Biologie", "Physiologie", "Épidémiologie","Pharmacologie"];
 
 interface SubCourse {
   id: string;
@@ -145,9 +145,6 @@ useEffect(() => {
   };
 
   // ── Navigation entre les questions ────────────────────────────────────────
-  /**
-   * Navigue vers la question précédente sans sauvegarder
-   */
   const handlePreviousQuestion = () => {
     if (currentIndex > 0) {
       const prevQuestion = questions[currentIndex - 1];
@@ -156,9 +153,6 @@ useEffect(() => {
     }
   };
 
-  /**
-   * Navigue vers la question suivante sans sauvegarder
-   */
   const handleNextQuestion = () => {
     if (currentIndex < questions.length - 1) {
       const nextQuestion = questions[currentIndex + 1];
@@ -209,16 +203,12 @@ useEffect(() => {
     });
   };
 
-// ═══════════════════════════════════════════════════════════════════════════
-// 🔥 MODIFICATION 2 : Améliorer la fonction toggleTag pour les cas cliniques
-// ═══════════════════════════════════════════════════════════════════════════
 const toggleTag = (tag: string) => {
   const current = currentQ.tags || [];
   const newTags = current.includes(tag)
     ? current.filter(t => t !== tag)
     : [...current, tag];
 
-  // Si c'est un cas clinique, mettre à jour TOUTES les questions du même cas
   if (currentQ.clinicalCaseId) {
     setQuestions(prev =>
       prev.map(q =>
@@ -230,12 +220,11 @@ const toggleTag = (tag: string) => {
     console.log(`✅ Tag "${tag}" appliqué à toutes les questions du cas clinique: ${currentQ.clinicalCaseId}`);
     setHasUnsavedChanges(true);
   } else {
-    // Sinon, mettre à jour seulement la question actuelle
     updateCurrentQuestion({ tags: newTags });
     console.log(`✅ Tag "${tag}" appliqué à la question: ${currentQ.id}`);
   }
 };
-// ═══════════════════════════════════════════════════════════════════════════
+
   // ── Sélection d'image depuis le PC ────────────────────────────────────────
   const handleImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -265,10 +254,11 @@ const toggleTag = (tag: string) => {
 
   const handleSave = async () => {
     try {
-      let imageUrl: string | null = currentQ.imageUrl ?? null;
+      // ✅ FIX: 3 cas distincts pour imageUrl
+      let imageUrl: string | null;
 
-      // Upload vers Supabase Storage si un nouveau fichier a été sélectionné
       if (imageFile) {
+        // Nouveau fichier sélectionné → upload
         setUploadingImage(true);
         const ext = imageFile.name.split(".").pop();
         const fileName = `${currentQ.id}-${Date.now()}.${ext}`;
@@ -283,24 +273,34 @@ const toggleTag = (tag: string) => {
           .from("question-images")
           .getPublicUrl(fileName);
 
-          console.log("✅ imageUrl générée:", urlData.publicUrl); // <-- ajoute ça
-          imageUrl = urlData.publicUrl;
         imageUrl = urlData.publicUrl;
+        console.log("✅ imageUrl générée:", imageUrl);
         setUploadingImage(false);
         setImageFile(null);
+      } else if (imagePreview === null) {
+        // Utilisateur a supprimé l'image → null en BD
+        imageUrl = null;
+      } else {
+        // Pas de changement → garder l'URL existante en BD
+        imageUrl = currentQ.imageUrl ?? null;
       }
 
+      // Sauvegarder la question courante avec la bonne imageUrl
       await updateQuestion(currentQ.id, {
         ...currentQ,
         imageUrl,
       });
+
+      // ✅ FIX: exclure currentQ du Promise.all pour ne pas écraser son imageUrl
       await Promise.all(
-        questions.map(q =>
-          updateQuestion(q.id, {
-            ...q,
-            tags: q.tags && q.tags.length > 0 ? q.tags : ["Clinique"],
-          })
-        )
+        questions
+          .filter(q => q.id !== currentQ.id)
+          .map(q =>
+            updateQuestion(q.id, {
+              ...q,
+              tags: q.tags && q.tags.length > 0 ? q.tags : ["Clinique"],
+            })
+          )
       );
 
       toast.success("✅ Modifications sauvegardées");

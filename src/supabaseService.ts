@@ -141,6 +141,7 @@ export async function createQuestions(seriesId: string, questions: QCMEntry[]) {
     tags: q.tags,
     sub_course: q.subCourse,
     clinical_case_id: q.clinicalCaseId,
+    image_url: q.imageUrl ?? null,
   }));
 
   const { data, error } = await supabase
@@ -175,8 +176,11 @@ export async function updateQuestion(questionId: string, updates: Partial<QCMEnt
   if (updates.tags !== undefined) updateData.tags = updates.tags;
   if (updates.subCourse !== undefined) updateData.sub_course = updates.subCourse;
   if (updates.clinicalCaseId !== undefined) updateData.clinical_case_id = updates.clinicalCaseId;
-  if (updates.imageUrl !== undefined) updateData.image_url = updates.imageUrl;
-
+  if (updates.imageUrl !== undefined && updates.imageUrl !== null) {
+    updateData.image_url = updates.imageUrl;
+  } else if (updates.imageUrl === null && 'imageUrl' in updates) {
+    updateData.image_url = null; 
+  }
 
   const { error } = await supabase
     .from('qcm_questions')
@@ -376,6 +380,8 @@ export async function getQuestionsPageWithFilters(
 // ===== UTILITAIRES DE CONVERSION =====
 
 export function convertSupabaseQuestionToQCMEntry(sq: SupabaseQuestion): QCMEntry {
+  console.log("🔍 RAW image_url reçu:", sq.image_url, "| id:", sq.id);
+  
   return {
     id: sq.id,
     series_id: sq.series_id,           
