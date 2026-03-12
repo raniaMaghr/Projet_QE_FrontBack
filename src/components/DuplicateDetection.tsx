@@ -1,3 +1,4 @@
+//DuplicateDetection.tsx - OPTIMISÉ
 import React, { useState, useEffect } from 'react';
 import { QCMEntry } from '../types/qcm.types';
 import { detectDuplicates, DuplicatePair } from '../services/duplicateService';
@@ -7,11 +8,13 @@ import { Card, CardHeader, CardTitle, CardContent } from './ui/card';
 import { Badge } from './ui/badge';
 import { useNavigate, useLocation } from "react-router-dom";
 import { supabase } from '../supabaseClient';
+import { LoadingSpinner } from './common/LoadingSpinner';
 
 interface DuplicateDetectionProps {
   questions: QCMEntry[];
   onDeleteQuestion: (idToDelete: string, idToKeep?: string) => void;
   onBack: () => void;
+  onLoadingComplete?: (hasError: boolean) => void;
 }
 
 interface QCMMetadata {
@@ -19,11 +22,13 @@ interface QCMMetadata {
   faculty?: string;
 }
 
-export default function DuplicateDetection({ questions, onDeleteQuestion, onBack }: DuplicateDetectionProps) {
+export default function DuplicateDetection({ questions, onDeleteQuestion, onBack, onLoadingComplete }: DuplicateDetectionProps) {
   const [duplicates, setDuplicates] = useState<DuplicatePair[]>([]);
   const [threshold, setThreshold] = useState(0.85);
   const [isScanning, setIsScanning] = useState(false);
+  const [isLoadingMetadata, setIsLoadingMetadata] = useState(false);
   const [metadata, setMetadata] = useState<Record<string, QCMMetadata>>({});
+  const [metadataError, setMetadataError] = useState<string | null>(null);
   const location = useLocation();
   const fromExternal = location.state?.fromExternal;
   const navigate = useNavigate();
@@ -42,60 +47,98 @@ export default function DuplicateDetection({ questions, onDeleteQuestion, onBack
     scanForDuplicates();
   }, [questions, threshold]);
 
-  // Récupérer les métadonnées (année et faculté) pour chaque QCM
+  /**
+   * Récupère les métadonnées (année et faculté) pour les questions dupliquées
+   * OPTIMISÉ : Utilise une requête groupée au lieu de boucles individuelles
+   */
   useEffect(() => {
     const fetchMetadata = async () => {
-      const newMetadata: Record<string, QCMMetadata> = { ...metadata };
-      let changed = false;
-
-      // Liste unique des questions dans les doublons pour éviter les appels inutiles
-      const uniqueQuestions = new Set<QCMEntry>();
-      duplicates.forEach(pair => {
-        uniqueQuestions.add(pair.question1);
-        uniqueQuestions.add(pair.question2);
-      });
-
-      for (const qcm of uniqueQuestions) {
-        if (newMetadata[qcm.id]) continue;
-
-        try {
-          // 1. Récupérer le series_id depuis qcm_questions
-          const { data: questionData, error: qError } = await supabase
-            .from('qcm_questions')
-            .select('series_id')
-            .eq('id', qcm.id)
-            .single();
-
-          if (qError || !questionData?.series_id) continue;
-
-          // 2. Récupérer year et faculty depuis qcm_series
-          const { data: seriesData, error: sError } = await supabase
-            .from('qcm_series')
-            .select('year, faculty')
-            .eq('id', questionData.series_id)
-            .single();
-
-          if (seriesData && !sError) {
-            newMetadata[qcm.id] = {
-              year: seriesData.year,
-              faculty: seriesData.faculty
-            };
-            changed = true;
-          }
-        } catch (err) {
-          console.error(`Erreur métadonnées QCM ${qcm.id}:`, err);
-        }
+      if (duplicates.length === 0) {
+        setIsLoadingMetadata(false);
+        setMetadataError(null);
+        onLoadingComplete?.(false);
+        return;
       }
 
-      if (changed) {
+      setIsLoadingMetadata(true);
+      setMetadataError(null);
+      const newMetadata: Record<string, QCMMetadata> = { ...metadata };
+      let hasError = false;
+
+      try {
+        // Liste unique des questions dans les doublons
+        const uniqueQuestionIds = new Set<string>();
+        duplicates.forEach(pair => {
+          uniqueQuestionIds.add(pair.question1.id);
+          uniqueQuestionIds.add(pair.question2.id);
+        });
+
+        // Filtrer les questions dont on a déjà les métadonnées
+        const missingIds = Array.from(uniqueQuestionIds).filter(id => !newMetadata[id]);
+
+        if (missingIds.length > 0) {
+          // ÉTAPE 1 : Récupérer tous les series_id en une seule requête groupée
+          const { data: questionsData, error: qError } = await supabase
+            .from('qcm_questions')
+            .select('id, series_id')
+            .in('id', missingIds);
+
+          if (qError) throw qError;
+
+          // Construire une map question_id -> series_id
+          const questionToSeriesMap = new Map<string, string>();
+          questionsData?.forEach(q => {
+            if (q.series_id) {
+              questionToSeriesMap.set(q.id, q.series_id);
+            }
+          });
+
+          // ÉTAPE 2 : Récupérer toutes les métadonnées de séries en une seule requête groupée
+          const seriesIds = Array.from(new Set(questionToSeriesMap.values()));
+          
+          if (seriesIds.length > 0) {
+            const { data: seriesData, error: sError } = await supabase
+              .from('qcm_series')
+              .select('id, year, faculty')
+              .in('id', seriesIds);
+
+            if (sError) throw sError;
+
+            // Construire une map series_id -> metadata
+            const seriesMetadataMap = new Map<string, QCMMetadata>();
+            seriesData?.forEach(s => {
+              seriesMetadataMap.set(s.id, {
+                year: s.year,
+                faculty: s.faculty
+              });
+            });
+
+            // ÉTAPE 3 : Associer les métadonnées aux questions
+            missingIds.forEach(questionId => {
+              const seriesId = questionToSeriesMap.get(questionId);
+              if (seriesId) {
+                const seriesMetadata = seriesMetadataMap.get(seriesId);
+                if (seriesMetadata) {
+                  newMetadata[questionId] = seriesMetadata;
+                }
+              }
+            });
+          }
+        }
+
         setMetadata(newMetadata);
+      } catch (err) {
+        console.error('Erreur récupération métadonnées:', err);
+        setMetadataError('Erreur lors du chargement des métadonnées');
+        hasError = true;
+      } finally {
+        setIsLoadingMetadata(false);
+        onLoadingComplete?.(hasError);
       }
     };
 
-    if (duplicates.length > 0) {
-      fetchMetadata();
-    }
-  }, [duplicates]);
+    fetchMetadata();
+  }, [duplicates, onLoadingComplete]);
 
   /**
    * MODIFIÉ : Supprime question2 et transfère ses tags à question1
@@ -143,6 +186,15 @@ export default function DuplicateDetection({ questions, onDeleteQuestion, onBack
 
   return (
     <div className="min-h-screen p-6 bg-gray-50">
+      {/* Overlay de chargement des métadonnées */}
+      {isLoadingMetadata && (
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center">
+          <div className="bg-white rounded-lg p-8 shadow-lg">
+            <LoadingSpinner size="lg" message="Chargement des métadonnées..." />
+          </div>
+        </div>
+      )}
+
       <div className="max-w-6xl mx-auto">
         {/* Header */}
         <div className="flex items-center justify-between mb-8">
@@ -162,7 +214,8 @@ export default function DuplicateDetection({ questions, onDeleteQuestion, onBack
                 step="0.05" 
                 value={threshold} 
                 onChange={(e) => setThreshold(parseFloat(e.target.value))}
-                className="w-32 h-2 bg-indigo-200 rounded-lg appearance-none cursor-pointer"
+                disabled={isLoadingMetadata}
+                className="w-32 h-2 bg-indigo-200 rounded-lg appearance-none cursor-pointer disabled:opacity-50"
               />
               <Badge variant="secondary" className="ml-2">
                 {Math.round(threshold * 100)}%
@@ -170,7 +223,7 @@ export default function DuplicateDetection({ questions, onDeleteQuestion, onBack
             </div>
             <Button 
               onClick={scanForDuplicates} 
-              disabled={isScanning}
+              disabled={isScanning || isLoadingMetadata}
               className="bg-indigo-600 hover:bg-indigo-700"
             >
               <Search className="w-4 h-4 mr-2" />
@@ -181,8 +234,9 @@ export default function DuplicateDetection({ questions, onDeleteQuestion, onBack
           {!fromExternal && (
           <button
             onClick={() => navigate("/tools/duplicates", { state: { fromExternal: true } })}
-            className="flex items-center gap-2 px-4 py-2 rounded-lg text-white shadow-md transition-all"
-            style={{ background: "#16a34a" }}
+            disabled={isLoadingMetadata}
+            className="flex items-center gap-2 px-4 py-2 rounded-lg text-white shadow-md transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+            style={{ background: isLoadingMetadata ? "#999" : "#16a34a" }}
           >
             <Copy className="w-4 h-4" />
             Analyser la base de données
@@ -207,83 +261,93 @@ export default function DuplicateDetection({ questions, onDeleteQuestion, onBack
           )}
         </div>
 
-        {/* Duplicates List */}
-        <div className="space-y-8">
-          {duplicates.map((pair, index) => (
-            <Card key={`${pair.question1.id}-${pair.question2.id}`} className="overflow-hidden border-2 border-indigo-100 shadow-md">
-              <CardHeader className="bg-indigo-50 border-b border-indigo-100 py-3 flex flex-row items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <Layers className="w-5 h-5 text-indigo-600" />
-                  <CardTitle className="text-sm font-semibold text-indigo-900 uppercase tracking-wider">
-                    Doublon Potentiel #{index + 1}
-                  </CardTitle>
-                </div>
-                <Badge variant="outline" className="bg-white text-indigo-700 border-indigo-200">
-                  {Math.round(pair.similarity * 100)}% de similitude
-                </Badge>
-              </CardHeader>
-              <CardContent className="p-0">
-                <div className="grid grid-cols-1 md:grid-cols-2 divide-y md:divide-y-0 md:divide-x divide-gray-200">
-                  {/* Question 1 */}
-                  <div className="p-6 bg-white">
-                    {renderQCMHeader(pair.question1, "Question A")}
-                    <p className="text-gray-800 font-medium mb-4">{pair.question1.question}</p>
-                    <div className="space-y-2">
-                      {pair.question1.options.map((opt, i) => (
-                        <div key={i} className={`text-sm p-2 rounded ${pair.question1.correctAnswers.includes(String.fromCharCode(65 + i)) ? 'bg-green-50 text-green-700' : 'bg-gray-50 text-gray-600'}`}>
-                          {String.fromCharCode(65 + i)}. {opt}
-                        </div>
-                      ))}
+        {/* Affichage d'erreur métadonnées */}
+        {metadataError && !isLoadingMetadata && (
+          <div className="mb-6 p-4 bg-yellow-50 border border-yellow-200 rounded-xl flex items-center gap-3 text-yellow-800">
+            <AlertCircle className="w-5 h-5" />
+            <p>{metadataError}</p>
+          </div>
+        )}
+
+        {/* Duplicates List - Affichage conditionnel basé sur le chargement des métadonnées */}
+        {!isLoadingMetadata && duplicates.length > 0 && (
+          <div className="space-y-8">
+            {duplicates.map((pair, index) => (
+              <Card key={`${pair.question1.id}-${pair.question2.id}`} className="overflow-hidden border-2 border-indigo-100 shadow-md">
+                <CardHeader className="bg-indigo-50 border-b border-indigo-100 py-3 flex flex-row items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <Layers className="w-5 h-5 text-indigo-600" />
+                    <CardTitle className="text-sm font-semibold text-indigo-900 uppercase tracking-wider">
+                      Doublon Potentiel #{index + 1}
+                    </CardTitle>
+                  </div>
+                  <Badge variant="outline" className="bg-white text-indigo-700 border-indigo-200">
+                    {Math.round(pair.similarity * 100)}% de similitude
+                  </Badge>
+                </CardHeader>
+                <CardContent className="p-0">
+                  <div className="grid grid-cols-1 md:grid-cols-2 divide-y md:divide-y-0 md:divide-x divide-gray-200">
+                    {/* Question 1 */}
+                    <div className="p-6 bg-white">
+                      {renderQCMHeader(pair.question1, "Question A")}
+                      <p className="text-gray-800 font-medium mb-4">{pair.question1.question}</p>
+                      <div className="space-y-2">
+                        {pair.question1.options.map((opt, i) => (
+                          <div key={i} className={`text-sm p-2 rounded ${pair.question1.correctAnswers.includes(String.fromCharCode(65 + i)) ? 'bg-green-50 text-green-700' : 'bg-gray-50 text-gray-600'}`}>
+                            {String.fromCharCode(65 + i)}. {opt}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Question 2 */}
+                    <div className="p-6 bg-gray-50">
+                      {renderQCMHeader(pair.question2, "Question B")}
+                      <p className="text-gray-800 font-medium mb-4">{pair.question2.question}</p>
+                      <div className="space-y-2">
+                        {pair.question2.options.map((opt, i) => (
+                          <div key={i} className={`text-sm p-2 rounded ${pair.question2.correctAnswers.includes(String.fromCharCode(65 + i)) ? 'bg-green-50 text-green-700' : 'bg-gray-50 text-gray-600'}`}>
+                            {String.fromCharCode(65 + i)}. {opt}
+                          </div>
+                        ))}
+                      </div>
                     </div>
                   </div>
 
-                  {/* Question 2 */}
-                  <div className="p-6 bg-gray-50">
-                    {renderQCMHeader(pair.question2, "Question B")}
-                    <p className="text-gray-800 font-medium mb-4">{pair.question2.question}</p>
-                    <div className="space-y-2">
-                      {pair.question2.options.map((opt, i) => (
-                        <div key={i} className={`text-sm p-2 rounded ${pair.question2.correctAnswers.includes(String.fromCharCode(65 + i)) ? 'bg-green-50 text-green-700' : 'bg-gray-50 text-gray-600'}`}>
-                          {String.fromCharCode(65 + i)}. {opt}
-                        </div>
-                      ))}
-                    </div>
+                  {/* Actions */}
+                  <div className="bg-gray-100 p-4 flex flex-wrap gap-3 justify-center border-t border-gray-200">
+                    <Button 
+                      variant="outline" 
+                      className="bg-white hover:bg-red-50 hover:text-red-600 border-red-200"
+                      onClick={() => handleKeepNew(pair)}
+                      title="Supprime A et transfère ses tags (année, faculté) à B"
+                    >
+                      <Trash2 className="w-4 h-4 mr-2" />
+                      Supprimer A (Garder B)
+                    </Button>
+                    <Button 
+                      variant="outline" 
+                      className="bg-white hover:bg-red-50 hover:text-red-600 border-red-200"
+                      onClick={() => handleKeepOld(pair)}
+                      title="Supprime B et transfère ses tags (année, faculté) à A"
+                    >
+                      <Trash2 className="w-4 h-4 mr-2" />
+                      Supprimer B (Garder A)
+                    </Button>
+                    <Button 
+                      variant="secondary"
+                      className="bg-white hover:bg-green-50 hover:text-green-600 border-green-200"
+                      onClick={() => handleKeepBoth(pair)}
+                    >
+                      <CheckCircle2 className="w-4 h-4 mr-2" />
+                      Garder les deux
+                    </Button>
                   </div>
-                </div>
-
-                {/* Actions */}
-                <div className="bg-gray-100 p-4 flex flex-wrap gap-3 justify-center border-t border-gray-200">
-                  <Button 
-                    variant="outline" 
-                    className="bg-white hover:bg-red-50 hover:text-red-600 border-red-200"
-                    onClick={() => handleKeepNew(pair)}
-                    title="Supprime A et transfère ses tags (année, faculté) à B"
-                  >
-                    <Trash2 className="w-4 h-4 mr-2" />
-                    Supprimer A (Garder B)
-                  </Button>
-                  <Button 
-                    variant="outline" 
-                    className="bg-white hover:bg-red-50 hover:text-red-600 border-red-200"
-                    onClick={() => handleKeepOld(pair)}
-                    title="Supprime B et transfère ses tags (année, faculté) à A"
-                  >
-                    <Trash2 className="w-4 h-4 mr-2" />
-                    Supprimer B (Garder A)
-                  </Button>
-                  <Button 
-                    variant="secondary"
-                    className="bg-white hover:bg-green-50 hover:text-green-600 border-green-200"
-                    onClick={() => handleKeepBoth(pair)}
-                  >
-                    <CheckCircle2 className="w-4 h-4 mr-2" />
-                    Garder les deux
-                  </Button>
-                </div>
-              </CardContent>
-            </Card>
-          ))}
-        </div>
+                </CardContent>
+              </Card>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );

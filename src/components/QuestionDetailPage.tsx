@@ -12,7 +12,8 @@ import {
   convertSupabaseSeriesToMetadata,
 } from "../supabaseService";
 
-const TAGS = ["Clinique", "Anatomie", "Biologie", "Physiologie", "Épidémiologie","Pharmacologie"];
+
+const TAGS = ["Clinique", "Anatomie", "Biologie", "Physiologie", "Épidémiologie"];
 
 interface SubCourse {
   id: string;
@@ -21,7 +22,57 @@ interface SubCourse {
   description?: string;
 }
 
+interface CaseNumbering {
+  caseNumber: number;
+  totalCases: number;
+  questionsInCase: number;
+  questionIndexInCase: number;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 🎣 HOOK PERSONNALISÉ : Navigation au clavier
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * Hook pour gérer la navigation au clavier (flèches gauche/droite)
+ * @param onPrevious - Fonction appelée quand la flèche gauche est pressée
+ * @param onNext - Fonction appelée quand la flèche droite est pressée
+ * @param enabled - Activer/désactiver la navigation clavier
+ */
+const useKeyboardNavigation = (
+  onPrevious: () => void,
+  onNext: () => void,
+  onSave: () => void,        // ← ajouter
+  enabled: boolean = true
+) => {
+  const saveRef = useRef(onSave);
+  const prevRef = useRef(onPrevious);
+  const nextRef = useRef(onNext);
+
+  useEffect(() => { saveRef.current = onSave; });
+  useEffect(() => { prevRef.current = onPrevious; });
+  useEffect(() => { nextRef.current = onNext; });
+
+  useEffect(() => {
+    if (!enabled) return;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement;
+      const isEditable = target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.tagName === "SELECT" || target.isContentEditable;
+      if (!isEditable) {
+        if (event.key === "ArrowLeft") { event.preventDefault(); prevRef.current(); }
+        if (event.key === "ArrowRight") { event.preventDefault(); nextRef.current(); }
+        if (event.key === "Enter") { event.preventDefault(); saveRef.current(); }
+      }
+      if (event.ctrlKey && event.key === "s") { event.preventDefault(); saveRef.current(); }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [enabled]);
+};
+
+
 export default function QuestionDetailPage() {
+
   const { questionId } = useParams<{ questionId: string }>();
   const navigate = useNavigate();
 
@@ -30,21 +81,330 @@ export default function QuestionDetailPage() {
   const [metadata, setMetadata] = useState<SeriesMetadata | null>(null);
   const [subCourses, setSubCourses] = useState<SubCourse[]>([]);
   const [courseId, setCourseId] = useState<string | null>(null);
-  const [newSubCourse, setNewSubCourse] = useState("");
-  const [showAddSubCourse, setShowAddSubCourse] = useState(false);
-  const [addingSubCourse, setAddingSubCourse] = useState(false);
-  const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
   const [loading, setLoading] = useState(true);
   const [seriesId, setSeriesId] = useState<string | null>(null);
+  const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
 
-  // ── Image states ──────────────────────────────────────────────────────────
+  // ──────────────────────────────────────────────────────────────────────────
+  // 🖼️ ÉTATS : Gestion des images
+  // ──────────────────────────────────────────────────────────────────────────
   const [imageFile, setImageFile] = useState<File | null>(null);
   const [imagePreview, setImagePreview] = useState<string | null>(null);
   const [uploadingImage, setUploadingImage] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  // ─────────────────────────────────────────────────────────────────────────
 
-useEffect(() => {
+  // ──────────────────────────────────────────────────────────────────────────
+  // ➕ ÉTATS : Gestion des sous-cours
+  // ──────────────────────────────────────────────────────────────────────────
+  const [newSubCourse, setNewSubCourse] = useState("");
+  const [showAddSubCourse, setShowAddSubCourse] = useState(false);
+  const [addingSubCourse, setAddingSubCourse] = useState(false);
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 🔧 FONCTIONS UTILITAIRES
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Calcule les numéros de cas clinique pour affichage
+   */
+  const getCaseNumbering = (
+    allQuestions: QCMEntry[],
+    currentQuestion: QCMEntry
+  ): CaseNumbering | null => {
+    if (!currentQuestion.clinicalCaseId) {
+      return null;
+    }
+
+    const caseMap = new Map<string, QCMEntry[]>();
+    const caseOrder: string[] = [];
+
+    allQuestions.forEach((q) => {
+      if (q.clinicalCaseId) {
+        if (!caseMap.has(q.clinicalCaseId)) {
+          caseMap.set(q.clinicalCaseId, []);
+          caseOrder.push(q.clinicalCaseId);
+        }
+        caseMap.get(q.clinicalCaseId)!.push(q);
+      }
+    });
+
+    const caseNumber = caseOrder.indexOf(currentQuestion.clinicalCaseId) + 1;
+    const totalCases = caseOrder.length;
+    const questionsInCase = caseMap.get(currentQuestion.clinicalCaseId)?.length || 0;
+    const questionsOfCase = caseMap.get(currentQuestion.clinicalCaseId) || [];
+    const questionIndexInCase = questionsOfCase.findIndex((q) => q.id === currentQuestion.id) + 1;
+
+    console.log(
+      `📊 Case Numbering: Case ${caseNumber}/${totalCases}, Question ${questionIndexInCase}/${questionsInCase}`
+    );
+
+    return {
+      caseNumber,
+      totalCases,
+      questionsInCase,
+      questionIndexInCase,
+    };
+  };
+
+  /**
+   * Met à jour la question actuelle
+   */
+  const updateCurrentQuestion = (updates: Partial<QCMEntry>) => {
+    setQuestions((prev) =>
+      prev.map((q) =>
+        q.id === currentQ.id
+          ? { ...q, ...updates, updatedAt: new Date().toISOString() }
+          : q
+      )
+    );
+    setHasUnsavedChanges(true);
+  };
+
+  /**
+   * Bascule une réponse correcte
+   */
+  const toggleCorrectAnswer = (letter: string) => {
+    const current = currentQ.correctAnswers || [];
+    updateCurrentQuestion({
+      correctAnswers: current.includes(letter)
+        ? current.filter((a) => a !== letter)
+        : [...current, letter],
+    });
+  };
+
+  /**
+   * Bascule un tag
+   */
+  const toggleTag = (tag: string) => {
+    const current = currentQ.tags || [];
+    const newTags = current.includes(tag)
+      ? current.filter((t) => t !== tag)
+      : [...current, tag];
+
+    // Si c'est un cas clinique, mettre à jour TOUTES les questions du même cas
+    if (currentQ.clinicalCaseId) {
+      setQuestions((prev) =>
+        prev.map((q) =>
+          q.clinicalCaseId === currentQ.clinicalCaseId
+            ? { ...q, tags: newTags, updatedAt: new Date().toISOString() }
+            : q
+        )
+      );
+      console.log(
+        `✅ Tag "${tag}" appliqué à toutes les questions du cas clinique: ${currentQ.clinicalCaseId}`
+      );
+      setHasUnsavedChanges(true);
+    } else {
+      // Sinon, mettre à jour seulement la question actuelle
+      updateCurrentQuestion({ tags: newTags });
+      console.log(`✅ Tag "${tag}" appliqué à la question: ${currentQ.id}`);
+    }
+  };
+
+  /**
+   * Ajoute une option
+   */
+  const addOption = () => {
+    if (currentQ.options.length < 10) {
+      updateCurrentQuestion({
+        options: [...currentQ.options, ""],
+      });
+    } else {
+      toast.warning("Maximum 10 options atteint");
+    }
+  };
+
+  /**
+   * Supprime une option
+   */
+  const removeOption = (index: number) => {
+    if (currentQ.options.length <= 2) {
+      toast.warning("Minimum 2 options requises");
+      return;
+    }
+    const newOptions = currentQ.options.filter((_: string, i: number) => i !== index);
+    const letter = String.fromCharCode(65 + index);
+    updateCurrentQuestion({
+      options: newOptions,
+      correctAnswers: currentQ.correctAnswers.filter((a) => a !== letter),
+    });
+  };
+
+  /**
+   * Met à jour une option
+   */
+  const updateOption = (index: number, value: string) => {
+    const newOptions = [...currentQ.options];
+    newOptions[index] = value;
+    updateCurrentQuestion({ options: newOptions });
+  };
+
+
+  const handleImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    if (!file.type.startsWith("image/")) {
+      toast.error("Veuillez sélectionner une image (PNG, JPG, GIF...)");
+      return;
+    }
+    if (file.size > 5 * 1024 * 1024) {
+      toast.error("Image trop lourde — maximum 5 Mo");
+      return;
+    }
+
+    setImageFile(file);
+    setImagePreview(URL.createObjectURL(file));
+    setHasUnsavedChanges(true);
+  };
+
+  
+  const handleRemoveImage = () => {
+    setImageFile(null);
+    setImagePreview(null);
+    updateCurrentQuestion({ imageUrl: null });
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  };
+
+  
+  const handleSave = async () => {
+    try {
+      let imageUrl: string | null = currentQ.imageUrl ?? null;
+
+      // Upload vers Supabase Storage si un nouveau fichier a été sélectionné
+      if (imageFile) {
+        setUploadingImage(true);
+        const ext = imageFile.name.split(".").pop();
+        const fileName = `${currentQ.id}-${Date.now()}.${ext}`;
+
+        const { error: uploadError } = await supabase.storage
+          .from("question-images")
+          .upload(fileName, imageFile, { upsert: true });
+
+        if (uploadError) throw uploadError;
+
+        const { data: urlData } = supabase.storage
+          .from("question-images")
+          .getPublicUrl(fileName);
+
+        console.log("✅ imageUrl générée:", urlData.publicUrl);
+        imageUrl = urlData.publicUrl;
+        setUploadingImage(false);
+        setImageFile(null);
+      }
+
+      await updateQuestion(currentQ.id, {
+        ...currentQ,
+        imageUrl,
+      });
+      await Promise.all(
+        questions.map((q) =>
+          updateQuestion(q.id, {
+            ...q,
+            tags: q.tags && q.tags.length > 0 ? q.tags : ["Clinique"],
+          })
+        )
+      );
+
+      toast.success("✅ Modifications sauvegardées");
+      setHasUnsavedChanges(false);
+      navigate(`/series/${seriesId}`);
+    } catch (err) {
+      console.error("Erreur sauvegarde:", err);
+      toast.error("Erreur lors de la sauvegarde");
+      setUploadingImage(false);
+    }
+  };
+
+  const handleAddSubCourse = async () => {
+    const trimmed = newSubCourse.trim();
+    if (!trimmed) {
+      toast.warning("Veuillez saisir un nom");
+      return;
+    }
+    if (!courseId) {
+      toast.error("Aucun cours associé à cet objectif");
+      return;
+    }
+    if (subCourses.some((sc) => sc.name === trimmed)) {
+      toast.warning("Ce sous-cours existe déjà");
+      return;
+    }
+
+    setAddingSubCourse(true);
+    try {
+      const { data, error } = await supabase
+        .from("sub_courses")
+        .insert({ name: trimmed, course_id: courseId })
+        .select("id, name, course_id, description")
+        .single();
+
+      if (error) throw error;
+
+      setSubCourses((prev) =>
+        [...prev, data].sort((a, b) => a.name.localeCompare(b.name))
+      );
+      setNewSubCourse("");
+      setShowAddSubCourse(false);
+      toast.success(`"${trimmed}" ajouté à ${metadata.objective}`);
+    } catch (err) {
+      console.error("Erreur ajout sous-cours:", err);
+      toast.error("Erreur lors de l'ajout");
+    } finally {
+      setAddingSubCourse(false);
+    }
+  };
+
+  /**
+   * Navigation avec confirmation si modifications non sauvegardées
+   */
+  const navigateQuestion = (direction: "prev" | "next") => {
+    if (
+      hasUnsavedChanges &&
+      !window.confirm("Modifications non sauvegardées. Continuer ?")
+    )
+      return;
+    const newIndex = direction === "prev" ? currentIndex - 1 : currentIndex + 1;
+    if (newIndex < 0 || newIndex >= questions.length) return;
+    setCurrentIndex(newIndex);
+    setHasUnsavedChanges(false);
+    navigate(`/question/${questions[newIndex].id}`);
+  };
+
+  /**
+   * Retour à la série avec confirmation
+   */
+  const handleBack = () => {
+    if (
+      hasUnsavedChanges &&
+      !window.confirm("Modifications non sauvegardées. Quitter sans sauvegarder ?")
+    )
+      return;
+    navigate(-1);
+  };
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // ⬅️ ➡️ NAVIGATION ENTRE LES QUESTIONS (Clavier)
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Navigue vers la question précédente (flèche gauche)
+   */
+  const handlePreviousQuestion = () => {
+    navigateQuestion("prev");
+  };
+
+  /**
+   * Navigue vers la question suivante (flèche droite)
+   */
+  const handleNextQuestion = () => {
+    navigateQuestion("next");
+  };
+
+  // Activer la navigation au clavier
+  useKeyboardNavigation(handlePreviousQuestion, handleNextQuestion ,handleSave);
+
+  useEffect(() => {
     if (!questionId) return;
 
     const fetchData = async () => {
@@ -87,7 +447,7 @@ useEffect(() => {
           }
         }
 
-        // 3. Récupérer TOUTES les questions de la série (triées par ordre d'insertion)
+        // 3. Récupérer TOUTES les questions de la série
         const supabaseQuestions = await getQuestionsBySeriesId(foundSeriesId);
         const converted = supabaseQuestions.map(convertSupabaseQuestionToQCMEntry);
 
@@ -98,26 +458,25 @@ useEffect(() => {
         }
 
         // 4. Trouver l'index de la question actuelle
-        const clickedIndex = converted.findIndex(q => q.id === questionId);
+        const clickedIndex = converted.findIndex((q) => q.id === questionId);
         if (clickedIndex === -1) {
           toast.error("Question introuvable dans la série");
           setLoading(false);
           return;
         }
 
-        // 5. Initialiser l'aperçu avec l'image existante si elle existe
+        // 5. Initialiser l'aperçu avec l'image existante
         const clickedQ = converted[clickedIndex];
         if (clickedQ.imageUrl) {
           setImagePreview(clickedQ.imageUrl);
         }
 
-        // 6. Charger TOUTES les questions de la série (pas seulement les cas cliniques)
+        // 6. Charger TOUTES les questions de la série
         setQuestions(converted);
         setCurrentIndex(clickedIndex);
 
         console.log(`✅ Série chargée: ${converted.length} questions trouvées`);
         console.log(`📍 Position actuelle: ${clickedIndex + 1}/${converted.length}`);
-
       } catch (err) {
         console.error("Erreur chargement:", err);
         toast.error("Impossible de charger la question");
@@ -129,6 +488,9 @@ useEffect(() => {
     fetchData();
   }, [questionId]);
 
+  /**
+   * Récupère les sous-cours d'un cours
+   */
   const fetchSubCourses = async (cid: string) => {
     const { data, error } = await supabase
       .from("sub_courses")
@@ -144,23 +506,10 @@ useEffect(() => {
     }
   };
 
-  // ── Navigation entre les questions ────────────────────────────────────────
-  const handlePreviousQuestion = () => {
-    if (currentIndex > 0) {
-      const prevQuestion = questions[currentIndex - 1];
-      console.log(`⬅️ Navigation vers question précédente: ${prevQuestion.id}`);
-      navigate(`/question/${prevQuestion.id}`);
-    }
-  };
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 🎨 RENDU
+  // ═══════════════════════════════════════════════════════════════════════════
 
-  const handleNextQuestion = () => {
-    if (currentIndex < questions.length - 1) {
-      const nextQuestion = questions[currentIndex + 1];
-      console.log(`➡️ Navigation vers question suivante: ${nextQuestion.id}`);
-      navigate(`/question/${nextQuestion.id}`);
-    }
-  };
-  
   if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center text-gray-500">
@@ -173,10 +522,17 @@ useEffect(() => {
 
   if (!currentQ || !metadata) {
     return (
-      <div className="min-h-screen p-6" style={{ background: "linear-gradient(to bottom right, #eef2ff, #fff, #f5f3ff)" }}>
+      <div
+        className="min-h-screen p-6"
+        style={{ background: "linear-gradient(to bottom right, #eef2ff, #fff, #f5f3ff)" }}
+      >
         <div className="text-center">
           <p className="text-gray-600 mb-4">Question introuvable</p>
-          <button onClick={() => navigate(-1)} className="px-4 py-2 text-white rounded-lg" style={{ background: "#4f46e5" }}>
+          <button
+            onClick={() => navigate(-1)}
+            className="px-4 py-2 text-white rounded-lg"
+            style={{ background: "#4f46e5" }}
+          >
             Retour
           </button>
         </div>
@@ -184,229 +540,45 @@ useEffect(() => {
     );
   }
 
-  const isClinicalCase = questions.length > 1;
-  const optionLetters = currentQ.options.map((_: string, i: number) => String.fromCharCode(65 + i));
-
-  const updateCurrentQuestion = (updates: Partial<QCMEntry>) => {
-    setQuestions(prev =>
-      prev.map(q => q.id === currentQ.id ? { ...q, ...updates, updatedAt: new Date().toISOString() } : q)
-    );
-    setHasUnsavedChanges(true);
-  };
-
-  const toggleCorrectAnswer = (letter: string) => {
-    const current = currentQ.correctAnswers || [];
-    updateCurrentQuestion({
-      correctAnswers: current.includes(letter)
-        ? current.filter(a => a !== letter)
-        : [...current, letter],
-    });
-  };
-
-const toggleTag = (tag: string) => {
-  const current = currentQ.tags || [];
-  const newTags = current.includes(tag)
-    ? current.filter(t => t !== tag)
-    : [...current, tag];
-
-  if (currentQ.clinicalCaseId) {
-    setQuestions(prev =>
-      prev.map(q =>
-        q.clinicalCaseId === currentQ.clinicalCaseId
-          ? { ...q, tags: newTags, updatedAt: new Date().toISOString() }
-          : q
-      )
-    );
-    console.log(`✅ Tag "${tag}" appliqué à toutes les questions du cas clinique: ${currentQ.clinicalCaseId}`);
-    setHasUnsavedChanges(true);
-  } else {
-    updateCurrentQuestion({ tags: newTags });
-    console.log(`✅ Tag "${tag}" appliqué à la question: ${currentQ.id}`);
-  }
-};
-
-  // ── Sélection d'image depuis le PC ────────────────────────────────────────
-  const handleImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-
-    if (!file.type.startsWith("image/")) {
-      toast.error("Veuillez sélectionner une image (PNG, JPG, GIF...)");
-      return;
-    }
-    if (file.size > 5 * 1024 * 1024) {
-      toast.error("Image trop lourde — maximum 5 Mo");
-      return;
-    }
-
-    setImageFile(file);
-    setImagePreview(URL.createObjectURL(file));
-    setHasUnsavedChanges(true);
-  };
-
-  const handleRemoveImage = () => {
-    setImageFile(null);
-    setImagePreview(null);
-    updateCurrentQuestion({ imageUrl: null });
-    if (fileInputRef.current) fileInputRef.current.value = "";
-  };
-  // ─────────────────────────────────────────────────────────────────────────
-
-  const handleSave = async () => {
-    try {
-      // ✅ FIX: 3 cas distincts pour imageUrl
-      let imageUrl: string | null;
-
-      if (imageFile) {
-        // Nouveau fichier sélectionné → upload
-        setUploadingImage(true);
-        const ext = imageFile.name.split(".").pop();
-        const fileName = `${currentQ.id}-${Date.now()}.${ext}`;
-
-        const { error: uploadError } = await supabase.storage
-          .from("question-images")
-          .upload(fileName, imageFile, { upsert: true });
-
-        if (uploadError) throw uploadError;
-
-        const { data: urlData } = supabase.storage
-          .from("question-images")
-          .getPublicUrl(fileName);
-
-        imageUrl = urlData.publicUrl;
-        console.log("✅ imageUrl générée:", imageUrl);
-        setUploadingImage(false);
-        setImageFile(null);
-      } else if (imagePreview === null) {
-        // Utilisateur a supprimé l'image → null en BD
-        imageUrl = null;
-      } else {
-        // Pas de changement → garder l'URL existante en BD
-        imageUrl = currentQ.imageUrl ?? null;
-      }
-
-      // Sauvegarder la question courante avec la bonne imageUrl
-      await updateQuestion(currentQ.id, {
-        ...currentQ,
-        imageUrl,
-      });
-
-      // ✅ FIX: exclure currentQ du Promise.all pour ne pas écraser son imageUrl
-      await Promise.all(
-        questions
-          .filter(q => q.id !== currentQ.id)
-          .map(q =>
-            updateQuestion(q.id, {
-              ...q,
-              tags: q.tags && q.tags.length > 0 ? q.tags : ["Clinique"],
-            })
-          )
-      );
-
-      toast.success("✅ Modifications sauvegardées");
-      setHasUnsavedChanges(false);
-      navigate(`/series/${seriesId}`);
-    } catch (err) {
-      console.error("Erreur sauvegarde:", err);
-      toast.error("Erreur lors de la sauvegarde");
-      setUploadingImage(false);
-    }
-  };
-
-  const handleAddSubCourse = async () => {
-    const trimmed = newSubCourse.trim();
-    if (!trimmed) {
-      toast.warning("Veuillez saisir un nom");
-      return;
-    }
-    if (!courseId) {
-      toast.error("Aucun cours associé à cet objectif");
-      return;
-    }
-    if (subCourses.some(sc => sc.name === trimmed)) {
-      toast.warning("Ce sous-cours existe déjà");
-      return;
-    }
-
-    setAddingSubCourse(true);
-    try {
-      const { data, error } = await supabase
-        .from("sub_courses")
-        .insert({ name: trimmed, course_id: courseId })
-        .select("id, name, course_id, description")
-        .single();
-
-      if (error) throw error;
-
-      setSubCourses(prev => [...prev, data].sort((a, b) => a.name.localeCompare(b.name)));
-      setNewSubCourse("");
-      setShowAddSubCourse(false);
-      toast.success(`"${trimmed}" ajouté à ${metadata.objective}`);
-    } catch (err) {
-      console.error("Erreur ajout sous-cours:", err);
-      toast.error("Erreur lors de l'ajout");
-    } finally {
-      setAddingSubCourse(false);
-    }
-  };
-
-  const updateOption = (index: number, value: string) => {
-    const newOptions = [...currentQ.options];
-    newOptions[index] = value;
-    updateCurrentQuestion({ options: newOptions });
-  };
-
-  const addOption = () => {
-    if (currentQ.options.length < 10) {
-      updateCurrentQuestion({ options: [...currentQ.options, ""] });
-    } else {
-      toast.warning("Maximum 10 options atteint");
-    }
-  };
-
-  const removeOption = (index: number) => {
-    if (currentQ.options.length <= 2) {
-      toast.warning("Minimum 2 options requises");
-      return;
-    }
-    const newOptions = currentQ.options.filter((_: string, i: number) => i !== index);
-    const letter = String.fromCharCode(65 + index);
-    updateCurrentQuestion({
-      options: newOptions,
-      correctAnswers: currentQ.correctAnswers.filter(a => a !== letter),
-    });
-  };
-
-  const navigateQuestion = (direction: "prev" | "next") => {
-    if (hasUnsavedChanges && !window.confirm("Modifications non sauvegardées. Continuer ?")) return;
-    const newIndex = direction === "prev" ? currentIndex - 1 : currentIndex + 1;
-    if (newIndex < 0 || newIndex >= questions.length) return;
-    setCurrentIndex(newIndex);
-    setHasUnsavedChanges(false);
-    navigate(`/question/${questions[newIndex].id}`);
-  };
-
-  const handleBack = () => {
-    if (hasUnsavedChanges && !window.confirm("Modifications non sauvegardées. Quitter sans sauvegarder ?")) return;
-    navigate(-1);
-  };
+  // Données pour l'affichage
+  const isClinicalCase = currentQ.clinicalCaseId ? true : false;
+  const optionLetters = currentQ.options.map((_: string, i: number) =>
+    String.fromCharCode(65 + i)
+  );
+  const caseNumbering = getCaseNumbering(questions, currentQ);
 
   return (
-    <div className="min-h-screen p-6" style={{ background: "linear-gradient(to bottom right, #eef2ff, #fff, #f5f3ff)" }}>
+    <div
+      className="min-h-screen p-6"
+      style={{ background: "linear-gradient(to bottom right, #eef2ff, #fff, #f5f3ff)" }}
+    >
       <div className="max-w-6xl mx-auto">
-
-        {/* Header */}
+        {/* ═══════════════════════════════════════════════════════════════════════════ */}
+        {/* 🔙 BOUTON RETOUR */}
+        {/* ═══════════════════════════════════════════════════════════════════════════ */}
         <div className="mb-6">
-          <button onClick={() => navigate(`/series/${seriesId}`)} className="flex items-center gap-2 text-indigo-600 hover:text-indigo-700 transition-colors mb-6">
+          <button
+            onClick={() => navigate(`/series/${seriesId}`)}
+            className="flex items-center gap-2 text-indigo-600 hover:text-indigo-700 transition-colors mb-6"
+          >
             <ArrowLeft className="w-4 h-4" />
             Retour à la série
           </button>
 
+          {/* ═══════════════════════════════════════════════════════════════════════════ */}
+          {/* 📊 EN-TÊTE AVEC BADGES ET BOUTON SAUVEGARDE */}
+          {/* ═══════════════════════════════════════════════════════════════════════════ */}
           <div className="bg-white rounded-2xl shadow-lg p-4">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-4">
-                <div className={`px-4 py-2 rounded-full ${isClinicalCase ? "bg-blue-100 text-blue-700" : "bg-purple-100 text-purple-700"}`}>
-                  {isClinicalCase ? `Cas clinique (${questions.length} questions)` : "QCM simple"}
+                <div
+                  className={`px-4 py-2 rounded-full ${
+                    isClinicalCase
+                      ? "bg-blue-100 text-blue-700"
+                      : "bg-purple-100 text-purple-700"
+                  }`}
+                >
+                  {isClinicalCase ? `Cas clinique` : "QCM simple"}
                 </div>
                 <div className="text-gray-600 text-sm">
                   {metadata.objective} • {metadata.faculty} • {metadata.year}
@@ -432,26 +604,87 @@ const toggleTag = (tag: string) => {
           </div>
         </div>
 
-        {/* Navigation cas clinique */}
-        {isClinicalCase && (
-          <div className="bg-white rounded-2xl shadow-lg p-4 mb-6">
-            <div className="flex items-center justify-between">
-              <button onClick={() => navigateQuestion("prev")} disabled={currentIndex === 0} className="p-2 rounded-lg hover:bg-gray-100 disabled:opacity-50 disabled:cursor-not-allowed transition-colors">
-                <ChevronLeft className="w-5 h-5" />
-              </button>
-              <div className="text-sm text-gray-600 font-medium">
-            Question <strong>{currentIndex + 1}</strong> / <strong>{questions.length}</strong>
+        {/* ═══════════════════════════════════════════════════════════════════════════ */}
+        {/* 🎹 INDICATEUR DE NAVIGATION CLAVIER */}
+        {/* ═══════════════════════════════════════════════════════════════════════════ 
+        <div className="mb-6 p-3 bg-blue-50 border border-blue-200 rounded-lg flex items-center gap-2 text-sm text-blue-700">
+          <span>⌨️ Utilisez les flèches</span>
+          <span className="font-mono bg-blue-100 px-2 py-1 rounded">←</span>
+          <span className="font-mono bg-blue-100 px-2 py-1 rounded">→</span>
+          <span>pour naviguer entre les questions</span>
+        </div> */}
+
+        {/* ═══════════════════════════════════════════════════════════════════════════ */}
+        {/* 📊 BARRE DE NAVIGATION SUPÉRIEURE */}
+        {/* ═══════════════════════════════════════════════════════════════════════════ */}
+        <div className="bg-white rounded-2xl shadow-lg p-4 mb-6">
+          <div className="flex items-center justify-between">
+            <button
+              onClick={() => navigateQuestion("prev")}
+              disabled={currentIndex === 0}
+              className="p-2 rounded-lg hover:bg-gray-100 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              title="Question précédente (← flèche gauche)"
+            >
+              <ChevronLeft className="w-5 h-5" />
+            </button>
+
+            <div className="text-sm text-gray-600 font-medium">
+              Question <strong>{currentIndex + 1}</strong> / <strong>{questions.length}</strong>
+            </div>
+
+            <button
+              onClick={() => navigateQuestion("next")}
+              disabled={currentIndex === questions.length - 1}
+              className="p-2 rounded-lg hover:bg-gray-100 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              title="Question suivante (→ flèche droite)"
+            >
+              <ChevronRight className="w-5 h-5" />
+            </button>
           </div>
-              <button onClick={() => navigateQuestion("next")} disabled={currentIndex === questions.length - 1} className="p-2 rounded-lg hover:bg-gray-100 disabled:opacity-50 disabled:cursor-not-allowed transition-colors">
-                <ChevronRight className="w-5 h-5" />
-              </button>
+        </div>
+
+        {/* ═══════════════════════════════════════════════════════════════════════════ */}
+        {/* 📋 BARRE DE NUMÉROTATION DES CAS CLINIQUES */}
+        {/* ═══════════════════════════════════════════════════════════════════════════ */}
+        {isClinicalCase && caseNumbering && (
+          <div className="bg-white rounded-2xl shadow-lg p-4 mb-6">
+            <div className="flex items-center justify-center gap-6">
+              <div
+                style={{
+                  fontSize: "0.875rem",
+                  fontWeight: 700,
+                  color: "#3b82f6",
+                  textTransform: "uppercase",
+                  letterSpacing: "0.05em",
+                }}
+              >
+                📋 CAS {caseNumbering.caseNumber} / {caseNumbering.totalCases}
+              </div>
+
+              <div
+                style={{
+                  fontSize: "1rem",
+                  fontWeight: 600,
+                  color: "#1f2937",
+                }}
+              >
+                Question{" "}
+                <span style={{ color: "#059669", fontWeight: 700 }}>
+                  {caseNumbering.questionIndexInCase}
+                </span>{" "}
+                /{" "}
+                <span style={{ color: "#059669", fontWeight: 700 }}>
+                  {caseNumbering.questionsInCase}
+                </span>
+              </div>
             </div>
           </div>
         )}
 
-        {/* Main Content */}
+        {/* ═══════════════════════════════════════════════════════════════════════════ */}
+        {/* 📝 CONTENU PRINCIPAL */}
+        {/* ═══════════════════════════════════════════════════════════════════════════ */}
         <div className="bg-white rounded-2xl shadow-lg p-8">
-
           {/* Question */}
           <div className="mb-6">
             <label className="block mb-2 text-gray-700 font-medium">Question</label>
@@ -462,14 +695,17 @@ const toggleTag = (tag: string) => {
               className="w-full p-4 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent resize-none transition-shadow"
               placeholder="Saisir la question..."
             />
-            <div className="mt-1 text-xs text-gray-500">{currentQ.question.length} caractères</div>
+            <div className="mt-1 text-xs text-gray-500">
+              {currentQ.question.length} caractères
+            </div>
           </div>
 
-          {/* ── IMAGE UPLOAD — PRO DESIGN ──────────────────────────────────── */}
+          {/* Image Upload */}
           <div className="mb-6">
-            <label className="block mb-3 text-gray-700 font-medium">Image de la question</label>
+            <label className="block mb-3 text-gray-700 font-medium">
+              Image de la question
+            </label>
 
-            {/* Hidden file input */}
             <input
               ref={fileInputRef}
               type="file"
@@ -479,7 +715,6 @@ const toggleTag = (tag: string) => {
             />
 
             {imagePreview ? (
-              /* ── Preview card ── */
               <div
                 style={{
                   display: "inline-flex",
@@ -492,7 +727,6 @@ const toggleTag = (tag: string) => {
                   background: "#f9fafb",
                 }}
               >
-                {/* Image wrapper */}
                 <div style={{ position: "relative" }}>
                   <img
                     src={imagePreview}
@@ -504,7 +738,6 @@ const toggleTag = (tag: string) => {
                       objectFit: "contain",
                     }}
                   />
-                  {/* Top gradient for button legibility */}
                   <div
                     style={{
                       position: "absolute",
@@ -513,7 +746,6 @@ const toggleTag = (tag: string) => {
                       pointerEvents: "none",
                     }}
                   />
-                  {/* Remove button */}
                   <button
                     onClick={handleRemoveImage}
                     title="Supprimer l'image"
@@ -535,20 +767,20 @@ const toggleTag = (tag: string) => {
                       zIndex: 2,
                       transition: "transform 0.15s, background 0.15s",
                     }}
-                    onMouseEnter={e => {
+                    onMouseEnter={(e) => {
                       (e.currentTarget as HTMLButtonElement).style.transform = "scale(1.12)";
                       (e.currentTarget as HTMLButtonElement).style.background = "#b91c1c";
                     }}
-                    onMouseLeave={e => {
+                    onMouseLeave={(e) => {
                       (e.currentTarget as HTMLButtonElement).style.transform = "scale(1)";
-                      (e.currentTarget as HTMLButtonElement).style.background = "rgba(220,38,38,0.9)";
+                      (e.currentTarget as HTMLButtonElement).style.background =
+                        "rgba(220,38,38,0.9)";
                     }}
                   >
                     <X className="w-3.5 h-3.5" />
                   </button>
                 </div>
 
-                {/* Footer action bar */}
                 <div
                   style={{
                     display: "flex",
@@ -590,11 +822,11 @@ const toggleTag = (tag: string) => {
                       cursor: "pointer",
                       transition: "background 0.15s, border-color 0.15s",
                     }}
-                    onMouseEnter={e => {
+                    onMouseEnter={(e) => {
                       (e.currentTarget as HTMLButtonElement).style.background = "#e0e7ff";
                       (e.currentTarget as HTMLButtonElement).style.borderColor = "#a5b4fc";
                     }}
-                    onMouseLeave={e => {
+                    onMouseLeave={(e) => {
                       (e.currentTarget as HTMLButtonElement).style.background = "#eef2ff";
                       (e.currentTarget as HTMLButtonElement).style.borderColor = "#c7d2fe";
                     }}
@@ -605,12 +837,11 @@ const toggleTag = (tag: string) => {
                 </div>
               </div>
             ) : (
-              /* ── Drop zone ── */
               <div
                 onClick={() => fileInputRef.current?.click()}
                 role="button"
                 tabIndex={0}
-                onKeyDown={e => e.key === "Enter" && fileInputRef.current?.click()}
+                onKeyDown={(e) => e.key === "Enter" && fileInputRef.current?.click()}
                 style={{
                   position: "relative",
                   display: "flex",
@@ -627,32 +858,48 @@ const toggleTag = (tag: string) => {
                   transition: "border-color 0.2s, background 0.2s",
                   outline: "none",
                 }}
-                onMouseEnter={e => {
+                onMouseEnter={(e) => {
                   const el = e.currentTarget as HTMLDivElement;
                   el.style.borderColor = "#818cf8";
                   el.style.background = "linear-gradient(145deg, #eef2ff 0%, #e0e7ff 100%)";
                 }}
-                onMouseLeave={e => {
+                onMouseLeave={(e) => {
                   const el = e.currentTarget as HTMLDivElement;
                   el.style.borderColor = "#d1d5db";
                   el.style.background = "linear-gradient(145deg, #fafafa 0%, #f4f4f5 100%)";
                 }}
-                onFocus={e => { (e.currentTarget as HTMLDivElement).style.borderColor = "#818cf8"; }}
-                onBlur={e => { (e.currentTarget as HTMLDivElement).style.borderColor = "#d1d5db"; }}
+                onFocus={(e) => {
+                  (e.currentTarget as HTMLDivElement).style.borderColor = "#818cf8";
+                }}
+                onBlur={(e) => {
+                  (e.currentTarget as HTMLDivElement).style.borderColor = "#d1d5db";
+                }}
               >
-                {/* Decorative blobs */}
-                <div style={{
-                  position: "absolute", width: "140px", height: "140px", borderRadius: "50%",
-                  background: "radial-gradient(circle, rgba(99,102,241,0.08) 0%, transparent 70%)",
-                  top: "-40px", right: "-40px", pointerEvents: "none",
-                }} />
-                <div style={{
-                  position: "absolute", width: "100px", height: "100px", borderRadius: "50%",
-                  background: "radial-gradient(circle, rgba(139,92,246,0.07) 0%, transparent 70%)",
-                  bottom: "-30px", left: "-30px", pointerEvents: "none",
-                }} />
+                <div
+                  style={{
+                    position: "absolute",
+                    width: "140px",
+                    height: "140px",
+                    borderRadius: "50%",
+                    background: "radial-gradient(circle, rgba(99,102,241,0.08) 0%, transparent 70%)",
+                    top: "-40px",
+                    right: "-40px",
+                    pointerEvents: "none",
+                  }}
+                />
+                <div
+                  style={{
+                    position: "absolute",
+                    width: "100px",
+                    height: "100px",
+                    borderRadius: "50%",
+                    background: "radial-gradient(circle, rgba(139,92,246,0.07) 0%, transparent 70%)",
+                    bottom: "-30px",
+                    left: "-30px",
+                    pointerEvents: "none",
+                  }}
+                />
 
-                {/* Icon container */}
                 <div
                   style={{
                     width: "56px",
@@ -669,9 +916,16 @@ const toggleTag = (tag: string) => {
                   <ImagePlus style={{ width: "26px", height: "26px", color: "white" }} />
                 </div>
 
-                {/* Text */}
                 <div style={{ textAlign: "center", zIndex: 1 }}>
-                  <p style={{ margin: 0, fontSize: "14px", fontWeight: 600, color: "#374151", lineHeight: 1.4 }}>
+                  <p
+                    style={{
+                      margin: 0,
+                      fontSize: "14px",
+                      fontWeight: 600,
+                      color: "#374151",
+                      lineHeight: 1.4,
+                    }}
+                  >
                     Cliquez pour ajouter une image
                   </p>
                   <p style={{ margin: "5px 0 0", fontSize: "12px", color: "#9ca3af" }}>
@@ -681,20 +935,23 @@ const toggleTag = (tag: string) => {
               </div>
             )}
           </div>
-          {/* ──────────────────────────────────────────────────────────────── */}
 
           {/* Options */}
           <div className="mb-6">
             <div className="flex items-center justify-between mb-3">
               <label className="text-gray-700 font-medium">Propositions</label>
-              <span className="text-xs text-gray-500">{currentQ.options.length} option{currentQ.options.length > 1 ? "s" : ""}</span>
+              <span className="text-xs text-gray-500">
+                {currentQ.options.length} option{currentQ.options.length > 1 ? "s" : ""}
+              </span>
             </div>
             <div className="space-y-3">
               {currentQ.options.map((option: string, i: number) => {
                 const letter = String.fromCharCode(65 + i);
                 return (
                   <div key={i} className="flex items-center gap-3">
-                    <span className="w-8 h-8 flex items-center justify-center bg-gray-100 rounded-full flex-shrink-0 font-medium">{letter}</span>
+                    <span className="w-8 h-8 flex items-center justify-center bg-gray-100 rounded-full flex-shrink-0 font-medium">
+                      {letter}
+                    </span>
                     <input
                       type="text"
                       value={option}
@@ -703,7 +960,11 @@ const toggleTag = (tag: string) => {
                       placeholder={`Option ${letter}`}
                     />
                     {currentQ.options.length > 2 && (
-                      <button onClick={() => removeOption(i)} className="p-2 rounded-lg transition-colors" style={{ color: "#dc2626" }}>
+                      <button
+                        onClick={() => removeOption(i)}
+                        className="p-2 rounded-lg transition-colors"
+                        style={{ color: "#dc2626" }}
+                      >
                         <Trash2 className="w-4 h-4" />
                       </button>
                     )}
@@ -712,7 +973,11 @@ const toggleTag = (tag: string) => {
               })}
             </div>
             {currentQ.options.length < 10 && (
-              <button onClick={addOption} className="mt-3 flex items-center gap-2 px-4 py-2 rounded-lg transition-colors" style={{ color: "#4f46e5" }}>
+              <button
+                onClick={addOption}
+                className="mt-3 flex items-center gap-2 px-4 py-2 rounded-lg transition-colors"
+                style={{ color: "#4f46e5" }}
+              >
                 <Plus className="w-4 h-4" />
                 Ajouter une option
               </button>
@@ -729,10 +994,16 @@ const toggleTag = (tag: string) => {
                   onClick={() => toggleCorrectAnswer(letter)}
                   disabled={!currentQ.options[i]?.trim()}
                   className={`w-12 h-12 rounded-full border-2 transition-all font-medium
-                    ${currentQ.correctAnswers.includes(letter) ? "text-white border-transparent shadow-lg scale-110" : "bg-white text-gray-700 border-gray-300"}
+                    ${
+                      currentQ.correctAnswers.includes(letter)
+                        ? "text-white border-transparent shadow-lg scale-110"
+                        : "bg-white text-gray-700 border-gray-300"
+                    }
                     ${!currentQ.options[i]?.trim() ? "opacity-30 cursor-not-allowed" : "cursor-pointer"}`}
                   title={currentQ.options[i] || "Option vide"}
-                  style={{ background: currentQ.correctAnswers.includes(letter) ? "#16a34a" : "" }}
+                  style={{
+                    background: currentQ.correctAnswers.includes(letter) ? "#16a34a" : "",
+                  }}
                 >
                   {letter}
                 </button>
@@ -757,7 +1028,11 @@ const toggleTag = (tag: string) => {
                 <button
                   key={tag}
                   onClick={() => toggleTag(tag)}
-                  className={`px-4 py-2 rounded-full border transition-all ${currentQ.tags?.includes(tag) ? "text-white border-transparent shadow-md" : "bg-white text-gray-700 border-gray-300"}`}
+                  className={`px-4 py-2 rounded-full border transition-all ${
+                    currentQ.tags?.includes(tag)
+                      ? "text-white border-transparent shadow-md"
+                      : "bg-white text-gray-700 border-gray-300"
+                  }`}
                   style={{ background: currentQ.tags?.includes(tag) ? "#4f46e5" : "" }}
                 >
                   {tag}
@@ -766,7 +1041,8 @@ const toggleTag = (tag: string) => {
             </div>
             {currentQ.tags && currentQ.tags.length > 0 && (
               <div className="mt-3 text-sm text-gray-600">
-                {currentQ.tags.length} tag{currentQ.tags.length > 1 ? "s" : ""} sélectionné{currentQ.tags.length > 1 ? "s" : ""}
+                {currentQ.tags.length} tag{currentQ.tags.length > 1 ? "s" : ""} sélectionné
+                {currentQ.tags.length > 1 ? "s" : ""}
               </div>
             )}
           </div>
@@ -777,7 +1053,8 @@ const toggleTag = (tag: string) => {
 
             {courseId ? (
               <p className="text-xs text-indigo-600 mb-3">
-                📚 Sous-cours de : <strong>{metadata.objective}</strong> ({subCourses.length} disponible{subCourses.length > 1 ? "s" : ""})
+                📚 Sous-cours de : <strong>{metadata.objective}</strong> (
+                {subCourses.length} disponible{subCourses.length > 1 ? "s" : ""})
               </p>
             ) : (
               <p className="text-xs text-orange-500 mb-3">
@@ -794,12 +1071,17 @@ const toggleTag = (tag: string) => {
               >
                 <option value="">-- Choisir un sous-cours --</option>
                 {subCourses.map((sc) => (
-                  <option key={sc.id} value={sc.name}>{sc.name}</option>
+                  <option key={sc.id} value={sc.name}>
+                    {sc.name}
+                  </option>
                 ))}
               </select>
 
               <button
-                onClick={() => { setShowAddSubCourse(v => !v); setNewSubCourse(""); }}
+                onClick={() => {
+                  setShowAddSubCourse((v) => !v);
+                  setNewSubCourse("");
+                }}
                 disabled={!courseId}
                 className="flex items-center gap-1 px-4 py-2 rounded-lg border transition-colors flex-shrink-0 disabled:opacity-40 disabled:cursor-not-allowed"
                 style={{
@@ -823,7 +1105,12 @@ const toggleTag = (tag: string) => {
                     type="text"
                     value={newSubCourse}
                     onChange={(e) => setNewSubCourse(e.target.value)}
-                    onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); handleAddSubCourse(); } }}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        handleAddSubCourse();
+                      }
+                    }}
                     placeholder="Ex: Cardiologie, Neurologie..."
                     autoFocus
                     className="flex-1 p-3 border border-indigo-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-transparent bg-white"
@@ -843,7 +1130,9 @@ const toggleTag = (tag: string) => {
 
           {/* Justification */}
           <div className="mb-6">
-            <label className="block mb-3 text-gray-700 font-medium">Justification / Explication</label>
+            <label className="block mb-3 text-gray-700 font-medium">
+              Justification / Explication
+            </label>
             <textarea
               value={currentQ.aiJustification || ""}
               onChange={(e) => updateCurrentQuestion({ aiJustification: e.target.value })}
@@ -851,38 +1140,61 @@ const toggleTag = (tag: string) => {
               className="w-full p-4 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent resize-none transition-shadow"
               placeholder="Ajouter une justification ou explication pour cette question..."
             />
-            <div className="mt-1 text-xs text-gray-500">{(currentQ.aiJustification || "").length} caractères</div>
+            <div className="mt-1 text-xs text-gray-500">
+              {(currentQ.aiJustification || "").length} caractères
+            </div>
           </div>
 
           {/* Stats */}
-          <div className="p-4 bg-gray-50 rounded-lg">
+          <div className="p-4 bg-gray-50 rounded-lg mb-6">
             <h4 className="text-sm font-medium text-gray-700 mb-2">Statut de la question</h4>
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
-              <div><span className="text-gray-600">Options :</span><span className="ml-2 font-medium">{currentQ.options.length}</span></div>
-              <div><span className="text-gray-600">Réponses :</span><span className={`ml-2 font-medium ${currentQ.correctAnswers.length > 0 ? "text-green-600" : "text-orange-600"}`}>{currentQ.correctAnswers.length}</span></div>
-              <div><span className="text-gray-600">Tags :</span><span className="ml-2 font-medium">{currentQ.tags?.length || 0}</span></div>
-              <div><span className="text-gray-600">Sous-cours :</span><span className="ml-2 font-medium">{currentQ.subCourse ? "✓" : "—"}</span></div>
+              <div>
+                <span className="text-gray-600">Options :</span>
+                <span className="ml-2 font-medium">{currentQ.options.length}</span>
+              </div>
+              <div>
+                <span className="text-gray-600">Réponses :</span>
+                <span
+                  className={`ml-2 font-medium ${
+                    currentQ.correctAnswers.length > 0 ? "text-green-600" : "text-orange-600"
+                  }`}
+                >
+                  {currentQ.correctAnswers.length}
+                </span>
+              </div>
+              <div>
+                <span className="text-gray-600">Tags :</span>
+                <span className="ml-2 font-medium">{currentQ.tags?.length || 0}</span>
+              </div>
+              <div>
+                <span className="text-gray-600">Sous-cours :</span>
+                <span className="ml-2 font-medium">{currentQ.subCourse ? "✓" : "—"}</span>
+              </div>
             </div>
           </div>
-            {/* Quick navigation buttons */}
-            <div className="flex items-center justify-between gap-4 mb-4">
-              <button
-                onClick={handlePreviousQuestion}
-                disabled={currentIndex === 0}
-                className="flex items-center gap-2 px-4 py-2 rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-              >
-                <ChevronLeft className="w-4 h-4" />
-                Précédent
-              </button>
-              <button
-                onClick={handleNextQuestion}
-                disabled={currentIndex === questions.length - 1}
-                className="flex items-center gap-2 px-4 py-2 rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-              >
-                Suivant
-                <ChevronRight className="w-4 h-4" />
-              </button>
-            </div>
+
+          {/* Navigation Buttons */}
+          <div className="flex items-center justify-between gap-4">
+            <button
+              onClick={() => navigateQuestion("prev")}
+              disabled={currentIndex === 0}
+              className="flex items-center gap-2 px-4 py-2 rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              title="Question précédente (← flèche gauche)"
+            >
+              <ChevronLeft className="w-4 h-4" />
+              Précédent
+            </button>
+            <button
+              onClick={() => navigateQuestion("next")}
+              disabled={currentIndex === questions.length - 1}
+              className="flex items-center gap-2 px-4 py-2 rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              title="Question suivante (→ flèche droite)"
+            >
+              Suivant
+              <ChevronRight className="w-4 h-4" />
+            </button>
+          </div>
         </div>
       </div>
     </div>

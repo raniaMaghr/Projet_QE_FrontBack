@@ -1,5 +1,5 @@
 /**
- * Sidebar de navigation principale
+ * Sidebar de navigation principale avec gestion des rôles
  */
 
 import React, { useState } from 'react';
@@ -7,6 +7,8 @@ import { Button } from '../ui/button';
 import { Logo } from '../Logo';
 import { cn } from '../ui/utils';
 import { useLocation, useNavigate } from 'react-router-dom';
+import { useAuth } from '../../contexts';
+
 import {
   Home,
   BookOpen,
@@ -30,9 +32,11 @@ interface NavItem {
   label: string;
   icon: React.ElementType;
   path?: string;
+  roles?: string[];
   children?: {
     label: string;
     path: string;
+    roles?: string[];
   }[];
 }
 
@@ -41,10 +45,12 @@ const navItems: NavItem[] = [
     label: 'Accueil',
     icon: Home,
     path: '/dashboard',
+    roles: ['student', 'admin', 'superAdmin'],
   },
   {
     label: 'Apprendre',
     icon: BookOpen,
+    roles: ['student'],
     children: [
       { label: 'Cours Communs', path: '/learn/courses' },
       { label: 'Résumé By HM', path: '/learn/summaries' },
@@ -54,10 +60,12 @@ const navItems: NavItem[] = [
     label: "S'organiser",
     icon: Calendar,
     path: '/planning',
+    roles: ['student'],
   },
   {
     label: 'Outils',
     icon: Settings,
+    roles: ['admin', 'superAdmin'],
     children: [
       { label: 'Series', path: '/series/list' },
       { label: 'Insérer Une Serie', path: '/insert-question' },
@@ -67,6 +75,7 @@ const navItems: NavItem[] = [
   {
     label: "S'entraîner",
     icon: PenTool,
+    roles: ['student'],
     children: [
       { label: 'QCM par Séries', path: '/train/series' },
       { label: 'QCM à la Carte', path: '/train/custom' },
@@ -77,20 +86,23 @@ const navItems: NavItem[] = [
     label: "S'examiner",
     icon: Trophy,
     path: '/exam',
+    roles: ['student'],
   },
   {
     label: 'Mes Stats',
     icon: BarChart3,
     path: '/stats',
+    roles: ['student', 'admin', 'superAdmin'],
   },
   {
-  label: 'Administration',
-  icon: Shield,
-  children: [
-    { label: 'Gestion des utilisateurs', path: '/superadmin' },
-    { label: 'Gestion des rôles', path: '/superadmin/roles' },
-  ],
-},
+    label: 'Administration',
+    icon: Shield,
+    roles: ['superAdmin'],
+    children: [
+      { label: 'Gestion des utilisateurs', path: '/superadmin' },
+      { label: 'Gestion des rôles', path: '/superadmin/roles' },
+    ],
+  },
 ];
 
 const secondaryNavItems: NavItem[] = [
@@ -98,23 +110,30 @@ const secondaryNavItems: NavItem[] = [
     label: 'Blog',
     icon: FileText,
     path: '/blog',
+    roles: ['student', 'admin', 'superAdmin'],
   },
   {
     label: 'Tutoriels',
     icon: School,
     path: '/tutorials',
+    roles: ['admin', 'superAdmin'],
   },
 ];
 
 export function Sidebar({ collapsed = false }: SidebarProps) {
   const location = useLocation();
   const navigate = useNavigate();
-  const [expandedItems, setExpandedItems] = useState<string[]>(['Apprendre', "S'entraîner"]);
+  const { user } = useAuth();
+
+  const [expandedItems, setExpandedItems] = useState<string[]>([
+    'Apprendre',
+    "S'entraîner",
+  ]);
 
   const toggleExpanded = (label: string) => {
-    setExpandedItems(prev =>
+    setExpandedItems((prev) =>
       prev.includes(label)
-        ? prev.filter(item => item !== label)
+        ? prev.filter((item) => item !== label)
         : [...prev, label]
     );
   };
@@ -126,8 +145,20 @@ export function Sidebar({ collapsed = false }: SidebarProps) {
 
   const isParentActive = (item: NavItem) => {
     if (item.path) return isActive(item.path);
-    return item.children?.some(child => isActive(child.path)) || false;
+    return item.children?.some((child) => isActive(child.path)) || false;
   };
+
+  const hasRole = (roles?: string[]) => {
+  if (!roles) return true;
+  if (!user || !user.role) return false;
+
+  return roles.includes(user.role);
+};
+
+  const filteredNavItems = navItems.filter((item) => hasRole(item.roles));
+  const filteredSecondary = secondaryNavItems.filter((item) =>
+    hasRole(item.roles)
+  );
 
   return (
     <aside
@@ -137,6 +168,7 @@ export function Sidebar({ collapsed = false }: SidebarProps) {
       )}
     >
       <div className="flex h-full flex-col">
+
         {/* Logo */}
         <div className="flex h-16 items-center border-b px-4">
           <Logo size={collapsed ? 'sm' : 'md'} iconOnly={collapsed} />
@@ -144,11 +176,11 @@ export function Sidebar({ collapsed = false }: SidebarProps) {
 
         {/* Navigation */}
         <nav className="flex-1 overflow-y-auto p-4 space-y-2">
-          {/* Main Navigation */}
-          {navItems.map((item) => (
+
+          {/* MAIN MENU */}
+          {filteredNavItems.map((item) => (
             <div key={item.label}>
               {item.children ? (
-                // Navigation item with children
                 <>
                   <Button
                     variant={isParentActive(item) ? 'default' : 'ghost'}
@@ -163,34 +195,34 @@ export function Sidebar({ collapsed = false }: SidebarProps) {
                       <item.icon className="h-4 w-4" />
                       {!collapsed && <span className="ml-3">{item.label}</span>}
                     </div>
-                    {!collapsed && (
-                      expandedItems.includes(item.label) ? (
+
+                    {!collapsed &&
+                      (expandedItems.includes(item.label) ? (
                         <ChevronUp className="h-4 w-4" />
                       ) : (
                         <ChevronDown className="h-4 w-4" />
-                      )
-                    )}
+                      ))}
                   </Button>
 
-                  {/* Submenu */}
                   {!collapsed && expandedItems.includes(item.label) && (
                     <div className="ml-4 mt-1 space-y-1">
-                      {item.children.map((child) => (
-                        <Button
-                          key={child.path}
-                          variant={isActive(child.path) ? 'secondary' : 'ghost'}
-                          size="sm"
-                          className="w-full justify-start text-sm"
-                          onClick={() => navigate(child.path)}
-                        >
-                          <span className="ml-3">{child.label}</span>
-                        </Button>
-                      ))}
+                      {item.children
+                        .filter((child) => hasRole(child.roles))
+                        .map((child) => (
+                          <Button
+                            key={child.path}
+                            variant={isActive(child.path) ? 'secondary' : 'ghost'}
+                            size="sm"
+                            className="w-full justify-start text-sm"
+                            onClick={() => navigate(child.path)}
+                          >
+                            <span className="ml-3">{child.label}</span>
+                          </Button>
+                        ))}
                     </div>
                   )}
                 </>
               ) : (
-                // Simple navigation item
                 <Button
                   variant={isActive(item.path) ? 'default' : 'ghost'}
                   className={cn(
@@ -207,11 +239,10 @@ export function Sidebar({ collapsed = false }: SidebarProps) {
             </div>
           ))}
 
-          {/* Separator */}
           <div className="h-px bg-border my-4" />
 
-          {/* Secondary Navigation */}
-          {secondaryNavItems.map((item) => (
+          {/* SECONDARY MENU */}
+          {filteredSecondary.map((item) => (
             <Button
               key={item.label}
               variant={isActive(item.path) ? 'default' : 'ghost'}
@@ -228,7 +259,6 @@ export function Sidebar({ collapsed = false }: SidebarProps) {
           ))}
         </nav>
 
-        {/* Footer - Version */}
         {!collapsed && (
           <div className="border-t p-4">
             <p className="text-xs text-muted-foreground text-center">

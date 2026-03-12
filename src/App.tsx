@@ -1,7 +1,3 @@
-/**
- * Point d'entrée principal de l'application - CORRIGÉ
- */
-
 import React, { useEffect, useState, Suspense, lazy } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { AuthProvider, ThemeProvider, useAuth } from './contexts';
@@ -139,8 +135,9 @@ function AppRoutes() {
         <Route path="/series/list" element={<SeriesManagementPage />} />
         <Route path="/series/:seriesId" element={<SeriesPageWrapper />} />
         <Route path="/question/:questionId" element={<QuestionDetailPage />} />
-      </Route>
+      
       <Route path="/series/:seriesId/edit" element={<SeriesEditPage />} />
+      </Route>
       <Route path="*" element={<Navigate to="/login" replace />} />
     </Routes>
   );

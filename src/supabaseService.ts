@@ -23,6 +23,7 @@ export interface SupabaseQuestion {
   sub_course: string | null;
   clinical_case_id: string | null;
   image_url: string | null;
+  order_index: number;
   created_at: string;
   updated_at: string;
 }
@@ -120,18 +121,33 @@ export async function updateSeries(seriesId: string, metadata: Partial<SeriesMet
 }
 
 export async function deleteSeries(seriesId: string) {
-  const { error } = await supabase
+  // 1. Supprimer d'abord toutes les questions liées à cette série
+  const { error: questionsError } = await supabase
+    .from('qcm_questions')
+    .delete()
+    .eq('series_id', seriesId);
+
+  if (questionsError) {
+    console.error("Erreur lors de la suppression des questions de la série:", questionsError);
+    throw questionsError;
+  }
+
+  // 2. Supprimer ensuite la série elle-même
+  const { error: seriesError } = await supabase
     .from('qcm_series')
     .delete()
     .eq('id', seriesId);
 
-  if (error) throw error;
+  if (seriesError) {
+    console.error("Erreur lors de la suppression de la série:", seriesError);
+    throw seriesError;
+  }
 }
 
 // ===== QUESTIONS =====
 
 export async function createQuestions(seriesId: string, questions: QCMEntry[]) {
-  const questionsToInsert = questions.map(q => ({
+  const questionsToInsert = questions.map((q, index) => ({
     series_id: seriesId,
     question: q.question,
     options: q.options,
@@ -142,6 +158,7 @@ export async function createQuestions(seriesId: string, questions: QCMEntry[]) {
     sub_course: q.subCourse,
     clinical_case_id: q.clinicalCaseId,
     image_url: q.imageUrl ?? null,
+    order_index: index,
   }));
 
   const { data, error } = await supabase
@@ -158,7 +175,7 @@ export async function getQuestionsBySeriesId(seriesId: string): Promise<Supabase
     .from('qcm_questions')
     .select('*')
     .eq('series_id', seriesId)
-    .order('created_at', { ascending: true });
+    .order('order_index', { ascending: true });
     console.log("seriesId:", seriesId);
     
   if (error) throw error;
@@ -211,8 +228,8 @@ export async function getAllSubCourses(): Promise<string[]> {
 
   const { data: series, error: seriesError } = await supabase
     .from('qcm_series')
-    .select('id')
-    .eq('user_id', user.id);
+    .select('id');
+    //.eq('user_id', user.id);
 
   if (seriesError) throw seriesError;
   if (!series || series.length === 0) return [];
@@ -246,7 +263,7 @@ export async function getAllSeriesWithMetadata(): Promise<SupabaseSeries[]> {
   const { data, error } = await supabase
     .from('qcm_series')
     .select('*')
-    .eq('user_id', user.id)
+    //.eq('user_id', user.id)
     .order('created_at', { ascending: false });
 
   if (error) throw error;
@@ -263,7 +280,7 @@ export async function getDistinctYears(): Promise<string[]> {
   const { data, error } = await supabase
     .from('qcm_series')
     .select('year')
-    .eq('user_id', user.id)
+    //.eq('user_id', user.id)
     .not('year', 'is', null);
 
   if (error) throw error;
@@ -284,7 +301,7 @@ export async function getDistinctFaculties(): Promise<string[]> {
   const { data, error } = await supabase
     .from('qcm_series')
     .select('faculty')
-    .eq('user_id', user.id)
+    //.eq('user_id', user.id)
     .not('faculty', 'is', null);
 
   if (error) throw error;
@@ -296,9 +313,30 @@ export async function getDistinctFaculties(): Promise<string[]> {
 }
 
 /**
+ * Récupère les objectifs distincts de toutes les séries
+ */
+export async function getDistinctObjectives(): Promise<string[]> {
+  const user = await getCurrentUser();
+  if (!user) throw new Error('User not authenticated');
+
+  const { data, error } = await supabase
+    .from('qcm_series')
+    .select('objective')
+    //.eq('user_id', user.id)
+    .not('objective', 'is', null);
+
+  if (error) throw error;
+
+  const unique = Array.from(new Set(
+    (data?.map((r: any) => r.objective).filter(Boolean) as string[]) || []
+  ));
+  return unique.sort();
+}
+
+/**
  * Récupère les questions paginées avec filtres optionnels
  * @param pageNumber - Numéro de la page (0-indexed)
- * @param filters - Filtres optionnels (seriesId, year, faculty, searchText)
+ * @param filters - Filtres optionnels (seriesId, year, faculty, objective, searchText)
  * @param itemsPerPage - Nombre d'éléments par page
  */
 export async function getQuestionsPageWithFilters(
@@ -307,6 +345,7 @@ export async function getQuestionsPageWithFilters(
     seriesId?: string;
     year?: string;
     faculty?: string;
+    objective?: string;
     searchText?: string;
   },
   itemsPerPage: number = 50
@@ -321,11 +360,11 @@ export async function getQuestionsPageWithFilters(
   const offset = pageNumber * itemsPerPage;
 
   try {
-    // Étape 1: Récupérer les IDs des séries selon les filtres (année, faculté, seriesId)
+    // Étape 1: Récupérer les IDs des séries selon les filtres (année, faculté, objectif, seriesId)
     let seriesQuery = supabase
       .from('qcm_series')
-      .select('id')
-      .eq('user_id', user.id);
+      .select('id');
+      //.eq('user_id', user.id);
 
     if (filters?.year) {
       seriesQuery = seriesQuery.eq('year', filters.year);
@@ -333,6 +372,10 @@ export async function getQuestionsPageWithFilters(
 
     if (filters?.faculty) {
       seriesQuery = seriesQuery.eq('faculty', filters.faculty);
+    }
+
+    if (filters?.objective) {
+      seriesQuery = seriesQuery.eq('objective', filters.objective);
     }
 
     if (filters?.seriesId) {
@@ -354,7 +397,7 @@ export async function getQuestionsPageWithFilters(
       .from('qcm_questions')
       .select('*', { count: 'exact' })
       .in('series_id', seriesIds)
-      .order('created_at', { ascending: false });
+      .order('order_index', { ascending: true });
 
     // Si searchText est fourni, chercher dans le texte de la question
     if (filters?.searchText) {
@@ -394,6 +437,7 @@ export function convertSupabaseQuestionToQCMEntry(sq: SupabaseQuestion): QCMEntr
     subCourse: sq.sub_course ?? null,
     clinicalCaseId: sq.clinical_case_id ?? undefined,
     imageUrl: sq.image_url ?? null,
+    orderIndex: sq.order_index,
     createdAt: sq.created_at,
     updatedAt: sq.updated_at,
   };

@@ -110,6 +110,7 @@ export interface QCMEntry {
   subCourse?: string | null;
   clinicalCaseId?: string;
   imageUrl?: string | null;
+  orderIndex:number;
   updatedAt?: string;
   createdAt: string;
 }

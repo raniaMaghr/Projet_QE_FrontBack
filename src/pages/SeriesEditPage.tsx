@@ -4,7 +4,7 @@ import { useParams, useNavigate } from "react-router-dom";
 import { QCMEntry } from "../types/qcm.types";
 import {
   ArrowLeft, Save, ChevronLeft, ChevronRight,
-  Trash2, Plus, X, ImagePlus, Settings
+  Trash2, Plus, X, ImagePlus, Settings, Copy
 } from "lucide-react";
 import { toast } from "sonner";
 import { supabase } from "../supabaseClient";
@@ -15,7 +15,7 @@ import {
   convertSupabaseQuestionToQCMEntry,
 } from "../supabaseService";
 
-const TAGS = ["Clinique", "Anatomie", "Biologie", "Physiologie", "Épidémiologie"];
+const TAGS = ["Clinique", "Anatomie", "Biologie", "Physiologie", "Épidémiologie","pharmacologie"];
 
 interface SubCourse {
   id: string;
@@ -34,9 +34,71 @@ interface EditableQuestion extends QCMEntry {
   _deleted?: boolean;
   _imageFile?: File | null;
   _imagePreview?: string | null;
-  // Flag to track if user explicitly removed an existing image
   _imageRemoved?: boolean;
 }
+
+interface CaseNumbering {
+  caseNumber: number;
+  totalCases: number;
+  questionsInCase: number;
+  questionIndexInCase: number;
+}
+
+
+const useKeyboardNavigation = (
+  onPrevious: () => void,
+  onNext: () => void,
+  onSave: () => void,
+  enabled: boolean = true
+) => {
+  const saveRef = useRef(onSave);
+  const prevRef = useRef(onPrevious);
+  const nextRef = useRef(onNext);
+
+  // Mise à jour des refs à chaque render — sans re-enregistrer l'écouteur
+  useEffect(() => { saveRef.current = onSave; });
+  useEffect(() => { prevRef.current = onPrevious; });
+  useEffect(() => { nextRef.current = onNext; });
+
+  useEffect(() => {
+    if (!enabled) return;
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement;
+      const tag = target.tagName;
+
+      const isEditable =
+        tag === "INPUT" ||
+        tag === "TEXTAREA" ||
+        tag === "SELECT" ||
+        target.isContentEditable;
+
+      if (!isEditable) {
+        if (event.key === "ArrowLeft") {
+          event.preventDefault();
+          prevRef.current();
+        }
+        if (event.key === "ArrowRight") {
+          event.preventDefault();
+          nextRef.current();
+        }
+        if (event.key === "Enter") {
+          event.preventDefault();
+          saveRef.current();
+        }
+      }
+
+      if (event.ctrlKey && event.key === "s") {
+        event.preventDefault();
+        saveRef.current();
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+    // L'écouteur est enregistré une seule fois — les refs gardent les valeurs fraîches
+  }, [enabled]);
+};
 
 export default function SeriesEditPage() {
   const { seriesId } = useParams<{ seriesId: string }>();
@@ -46,6 +108,7 @@ export default function SeriesEditPage() {
   const [loading, setLoading]     = useState(true);
   const [saving, setSaving]       = useState(false);
   const [uploadingImage, setUploadingImage] = useState(false);
+  const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
 
   const [meta, setMeta]           = useState<SeriesMeta>({ faculty: "", objective: "", year: "" });
   const [showMetaEditor, setShowMetaEditor] = useState(false);
@@ -56,6 +119,8 @@ export default function SeriesEditPage() {
   // Navigation par ID — jamais par index
   const [currentId, setCurrentId] = useState<string | null>(null);
 
+
+
   const [subCourses, setSubCourses] = useState<SubCourse[]>([]);
   const [courseId, setCourseId]     = useState<string | null>(null);
   const [newSubCourse, setNewSubCourse]     = useState("");
@@ -64,8 +129,46 @@ export default function SeriesEditPage() {
 
   // ── Dérivés — recalculés à chaque render ─────────────────────────────────
   const activeQuestions = questions.filter(q => !q._deleted);
-  const currentQ        = activeQuestions.find(q => q.id === currentId) ?? activeQuestions[0] ?? null;
-  const currentIndex    = currentQ ? activeQuestions.findIndex(q => q.id === currentQ.id) : 0;
+  const displayedQuestions = activeQuestions;
+
+  const currentQ = displayedQuestions.find(q => q.id === currentId) ?? displayedQuestions[0] ?? null;
+  const currentIndex = currentQ ? displayedQuestions.findIndex(q => q.id === currentQ.id) : 0;
+
+  // ── Calcul de la numérotation du cas clinique ──────────────────────────────
+  const getCaseNumbering = (
+    allQuestions: EditableQuestion[],
+    currentQuestion: EditableQuestion
+  ): CaseNumbering | null => {
+    if (!currentQuestion.clinicalCaseId) {
+      return null;
+    }
+
+    const caseMap = new Map<string, EditableQuestion[]>();
+    const caseOrder: string[] = [];
+
+    allQuestions.forEach((q) => {
+      if (q.clinicalCaseId) {
+        if (!caseMap.has(q.clinicalCaseId)) {
+          caseMap.set(q.clinicalCaseId, []);
+          caseOrder.push(q.clinicalCaseId);
+        }
+        caseMap.get(q.clinicalCaseId)!.push(q);
+      }
+    });
+
+    const caseNumber = caseOrder.indexOf(currentQuestion.clinicalCaseId) + 1;
+    const totalCases = caseOrder.length;
+    const questionsInCase = caseMap.get(currentQuestion.clinicalCaseId)?.length || 0;
+    const questionsOfCase = caseMap.get(currentQuestion.clinicalCaseId) || [];
+    const questionIndexInCase = questionsOfCase.findIndex((q) => q.id === currentQuestion.id) + 1;
+
+    return {
+      caseNumber,
+      totalCases,
+      questionsInCase,
+      questionIndexInCase,
+    };
+  };
 
   // ── Chargement initial ───────────────────────────────────────────────────
   useEffect(() => {
@@ -101,20 +204,14 @@ export default function SeriesEditPage() {
 
         // Questions
         const raw = await getQuestionsBySeriesId(seriesId);
-console.log("Premier question raw:", JSON.stringify(raw[0], null, 2));
         const converted: EditableQuestion[] = raw.map(q => {
           const entry = convertSupabaseQuestionToQCMEntry(q);
-          // ✅ FIX: Correctly initialize image state from DB
-          // _imagePreview shows the current image (from DB URL or new file)
-          // _imageFile is null until user selects a new file
-          // _imageRemoved tracks if user explicitly clicked "remove"
           return {
             ...entry,
             _isNew:        false,
             _deleted:      false,
             _imageFile:    null,
             _imagePreview: entry.imageUrl || null,
-            _imageRemoved: false,
           };
         });
         setQuestions(converted);
@@ -139,18 +236,20 @@ console.log("Premier question raw:", JSON.stringify(raw[0], null, 2));
           : q
       )
     );
+    setHasUnsavedChanges(true);
   };
 
-  // ── Navigation ────────────────────────────────────────────────────────────
-  const goTo = (id: string) => setCurrentId(id);
-  const goPrev = () => {
-    if (currentIndex > 0) goTo(activeQuestions[currentIndex - 1].id);
-  };
-  const goNext = () => {
-    if (currentIndex < activeQuestions.length - 1) goTo(activeQuestions[currentIndex + 1].id);
-  };
+const goTo = (id: string) => setCurrentId(id);
+const goPrev = () => {
+  if (currentIndex > 0) goTo(displayedQuestions[currentIndex - 1].id);
+};
+const goNext = () => {
+  if (currentIndex < displayedQuestions.length - 1) goTo(displayedQuestions[currentIndex + 1].id);
+};
+const handleSaveRef = useRef<() => void>(() => {});
+useKeyboardNavigation(goPrev, goNext, () => handleSaveRef.current());
 
-  // ── Options ───────────────────────────────────────────────────────────────
+
   const updateOption = (index: number, value: string) => {
     if (!currentQ) return;
     const newOptions = [...currentQ.options];
@@ -200,7 +299,6 @@ console.log("Premier question raw:", JSON.stringify(raw[0], null, 2));
     if (!file) return;
     if (!file.type.startsWith("image/")) { toast.error("Image requise (PNG, JPG...)"); return; }
     if (file.size > 5 * 1024 * 1024)    { toast.error("Max 5 Mo"); return; }
-    // ✅ FIX: Set new file + preview, mark as NOT removed
     updateCurrentQuestion({
       _imageFile:    file,
       _imagePreview: URL.createObjectURL(file),
@@ -209,7 +307,6 @@ console.log("Premier question raw:", JSON.stringify(raw[0], null, 2));
   };
 
   const handleRemoveImage = () => {
-    // ✅ FIX: Mark image as removed so save knows to set imageUrl to null in DB
     updateCurrentQuestion({
       _imageFile:    null,
       _imagePreview: null,
@@ -238,7 +335,6 @@ console.log("Premier question raw:", JSON.stringify(raw[0], null, 2));
       _deleted:       false,
       _imageFile:     null,
       _imagePreview:  null,
-      _imageRemoved:  false,
     };
     setQuestions(prev => [...prev, newQ]);
     setCurrentId(newQ.id);
@@ -248,7 +344,7 @@ console.log("Premier question raw:", JSON.stringify(raw[0], null, 2));
     if (!currentQ) return;
     if (!window.confirm("Supprimer cette question ?")) return;
 
-    const remainingActive = activeQuestions.filter(q => q.id !== currentQ.id);
+    const remainingActive = displayedQuestions.filter(q => q.id !== currentQ.id);
     const nextQ = remainingActive[Math.max(0, currentIndex - 1)] ?? remainingActive[0] ?? null;
 
     if (currentQ._isNew) {
@@ -285,9 +381,53 @@ console.log("Premier question raw:", JSON.stringify(raw[0], null, 2));
     }
   };
 
+  // ── Copier la question ────────────────────────────────────────────────────
+  const handleCopyQuestion = () => {
+    if (!currentQ) return;
+
+    const optionsText = currentQ.options
+      .map((opt, i) => `${String.fromCharCode(65 + i)}) ${opt}`)
+      .join("\n");
+
+    const answersText = currentQ.correctAnswers.length > 0
+      ? `Réponse(s) : ${currentQ.correctAnswers.sort().join(", ")}`
+      : "Aucune réponse sélectionnée";
+
+    const tagsText = (currentQ.tags && currentQ.tags.length > 0)
+      ? `\n\nTags: ${currentQ.tags.join(", ")}`
+      : "";
+
+    const subCourseText = currentQ.subCourse
+      ? `\nSous-cours: ${currentQ.subCourse}`
+      : "";
+
+    const fullText = `${currentQ.question}\n\n${optionsText}\n\n${answersText}${tagsText}${subCourseText}`;
+
+    navigator.clipboard.writeText(fullText)
+      .then(() => toast.success("Question copiée dans le presse-papier !"))
+      .catch(() => toast.error("Erreur lors de la copie"));
+  };
+
   // ── SAUVEGARDE ────────────────────────────────────────────────────────────
+  const handleBack = async () => {
+    if (hasUnsavedChanges) {
+      const res = window.confirm("Voulez-vous sauvegarder vos modifications avant de quitter ?\n\n— Cliquez sur \"OK\" pour SAUVEGARDER et quitter.\n— Cliquez sur \"Annuler\" pour QUITTER SANS sauvegarder.");
+      if (res) {
+        try {
+          await handleSave();
+          navigate(`/series/list`);
+        } catch (err) {
+          console.error("Erreur lors de la sauvegarde automatique:", err);
+        }
+        return;
+      }
+    }
+    navigate(`/series/list`);
+  };
+
   const handleSave = async () => {
     setSaving(true);
+    setHasUnsavedChanges(false);
     try {
       // 1. Mettre à jour les métadonnées de la série
       const { error: metaError } = await supabase
@@ -309,14 +449,8 @@ console.log("Premier question raw:", JSON.stringify(raw[0], null, 2));
 
       // 3. Insérer ou mettre à jour les questions actives
       for (const q of questions.filter(q => !q._deleted)) {
-        // ✅ FIX: Determine final imageUrl correctly:
-        // - If user selected a new file → upload it and use new URL
-        // - If user removed the image (_imageRemoved) → set to null
-        // - Otherwise → keep the existing imageUrl from DB (no change)
-        let imageUrl: string | null;
-
+        let imageUrl = q.imageUrl;
         if (q._imageFile) {
-          // New file selected → upload
           setUploadingImage(true);
           const ext      = q._imageFile.name.split(".").pop();
           const fileName = `${q._isNew ? `new_${Date.now()}` : q.id}-${Date.now()}.${ext}`;
@@ -326,32 +460,26 @@ console.log("Premier question raw:", JSON.stringify(raw[0], null, 2));
           if (upErr) throw upErr;
           imageUrl = supabase.storage.from("question-images").getPublicUrl(fileName).data.publicUrl;
           setUploadingImage(false);
-        } else if (q._imageRemoved) {
-          // User explicitly removed the image → null
-          imageUrl = null;
-        } else {
-          // No change → preserve existing imageUrl from DB
-          imageUrl = q.imageUrl ?? null;
         }
 
         if (q._isNew) {
           // INSERT
           const { error } = await supabase.from("qcm_questions").insert({
-            series_id:        seriesId,
-            question:         q.question,
-            options:          q.options,
-            correct_answers:  q.correctAnswers,
-            tags:             q.tags ?? [],
-            sub_course:       q.subCourse ?? null,
+            series_id:       seriesId,
+            question:        q.question,
+            options:         q.options,
+            correct_answers: q.correctAnswers,
+            tags:            q.tags ?? [],
+            sub_course:      q.subCourse ?? null,
             ai_justification: q.aiJustification ?? null,
-            type:             q.type ?? "QCM",
-            image_url:        imageUrl,
-            created_at:       new Date().toISOString(),
-            updated_at:       new Date().toISOString(),
+            type:            q.type ?? "QCM",
+            image_url:       imageUrl,
+            created_at:      new Date().toISOString(),
+            updated_at:      new Date().toISOString(),
           });
           if (error) throw error;
         } else {
-          // UPDATE — mapping camelCase → snake_case explicite
+          // UPDATE
           await updateQuestion(q.id, {
             question:        q.question,
             options:         q.options,
@@ -360,6 +488,7 @@ console.log("Premier question raw:", JSON.stringify(raw[0], null, 2));
             type:            q.type,
             tags:            q.tags ?? [],
             subCourse:       q.subCourse ?? null,
+            imageUrl:        imageUrl,
           });
         }
       }
@@ -374,7 +503,9 @@ console.log("Premier question raw:", JSON.stringify(raw[0], null, 2));
       setUploadingImage(false);
     }
   };
-
+  useEffect(() => {
+    handleSaveRef.current = handleSave;
+  });
   // ── États de chargement / vide ────────────────────────────────────────────
   if (loading) {
     return (
@@ -388,7 +519,7 @@ console.log("Premier question raw:", JSON.stringify(raw[0], null, 2));
     return (
       <div className="min-h-screen p-6" style={{ background: "linear-gradient(to bottom right, #eef2ff, #fff, #f5f3ff)" }}>
         <div className="max-w-6xl mx-auto">
-          <button onClick={() => navigate(`/series/${seriesId}`)} className="flex items-center gap-2 text-indigo-600 mb-6">
+          <button onClick={handleBack} className="flex items-center gap-2 text-indigo-600 mb-6">
             <ArrowLeft className="w-4 h-4" /> Retour
           </button>
           <div className="bg-white rounded-2xl shadow-lg p-12 text-center">
@@ -403,8 +534,10 @@ console.log("Premier question raw:", JSON.stringify(raw[0], null, 2));
   }
 
   const optionLetters = currentQ.options.map((_: string, i: number) => String.fromCharCode(65 + i));
-  const imagePreview = currentQ._imagePreview || currentQ.imageUrl || null;
-  const pendingCount  = questions.filter(q => !q._deleted).length;
+  const imagePreview  = currentQ._imagePreview ?? currentQ.imageUrl ?? null;
+  const pendingCount  = displayedQuestions.filter(q => !q._deleted).length;
+  const caseNumbering = getCaseNumbering(activeQuestions, currentQ);
+  const isClinicalCase = currentQ.clinicalCaseId ? true : false;
 
   return (
     <div className="min-h-screen p-6" style={{ background: "linear-gradient(to bottom right, #eef2ff, #fff, #f5f3ff)" }}>
@@ -413,10 +546,10 @@ console.log("Premier question raw:", JSON.stringify(raw[0], null, 2));
         {/* ── Header ── */}
         <div className="mb-6">
           <button
-            onClick={() => navigate(`/series/${seriesId}`)}
+            onClick={handleBack}
             className="flex items-center gap-2 text-indigo-600 hover:text-indigo-700 transition-colors mb-6"
           >
-            <ArrowLeft className="w-4 h-4" /> Retour à la série
+            <ArrowLeft className="w-4 h-4" /> Retour 
           </button>
 
           <div className="bg-white rounded-2xl shadow-lg p-4">
@@ -436,11 +569,11 @@ console.log("Premier question raw:", JSON.stringify(raw[0], null, 2));
               <button
                 onClick={handleSave}
                 disabled={saving || uploadingImage}
-                className="flex items-center gap-2 px-5 py-2 text-white rounded-lg font-semibold disabled:opacity-60 transition-colors"
+                className="flex items-center gap-2 px-5 py-2 p-1 text-white rounded-lg font-semibold disabled:opacity-60 transition-colors"
                 style={{ background: "#16a34a" }}
               >
                 <Save className="w-4 h-4" />
-                {saving ? "Sauvegarde…" : uploadingImage ? "Upload…" : `Sauvegarder (${pendingCount})`}
+                {saving ? "Sauvegarde…" : uploadingImage ? "Upload…" : `Sauvegarder Tous`}
               </button>
             </div>
 
@@ -464,63 +597,117 @@ console.log("Premier question raw:", JSON.stringify(raw[0], null, 2));
           </div>
         </div>
 
+        {/* ═══════════════════════════════════════════════════════════════════════════ */}
+        {/* 🎹 INDICATEUR DE NAVIGATION CLAVIER */}
+        {/* ═══════════════════════════════════════════════════════════════════════════ 
+        <div className="mb-6 p-3 bg-blue-50 border border-blue-200 rounded-lg flex items-center gap-2 text-sm text-blue-700">
+          <span>⌨️ Utilisez les flèches</span>
+          <span className="font-mono bg-blue-100 px-2 py-1 rounded">←</span>
+          <span className="font-mono bg-blue-100 px-2 py-1 rounded">→</span>
+          <span>pour naviguer entre les questions</span>
+        </div>
+*/}
+
+
         {/* ── Barre de navigation ── */}
         <div className="bg-white rounded-2xl shadow-lg p-4 mb-6">
           <div className="flex items-center justify-between">
-            <button onClick={goPrev} disabled={currentIndex === 0}
-              className="p-2 rounded-lg hover:bg-gray-100 disabled:opacity-30 disabled:cursor-not-allowed transition-colors">
+            {/* Gauche */}
+            <button
+              onClick={goPrev}
+              disabled={currentIndex === 0}
+              className="p-2 rounded-lg hover:bg-gray-100 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+              title="Question précédente (← flèche gauche)"
+            >
               <ChevronLeft className="w-5 h-5" />
             </button>
 
-            <div className="flex items-center gap-4 flex-wrap justify-center">
-              <span className="text-sm text-gray-600 font-medium">
-                Question <strong>{currentIndex + 1}</strong> / <strong>{activeQuestions.length}</strong>
-                {currentQ._isNew && <span className="ml-2 text-xs px-2 py-0.5 bg-purple-100 text-purple-700 rounded-full">Nouvelle</span>}
-              </span>
-              <button onClick={addQuestion}
+            {/* Centre */}
+            <div className="text-sm text-gray-600 font-medium">
+              Question <strong>{currentIndex + 1}</strong> / <strong>{displayedQuestions.length}</strong>
+            </div>
+
+            {/* Droite */}
+            <div className="flex items-center gap-2">
+              <button
+                onClick={addQuestion}
                 className="flex items-center gap-1 text-xs px-3 py-1.5 rounded-lg text-white font-medium"
-                style={{ background: "#4f46e5" }}>
+                style={{ background: "#4f46e5" }}
+              >
                 <Plus className="w-3.5 h-3.5" /> Nouvelle question
               </button>
-              <button onClick={deleteCurrentQuestion}
-                className="flex items-center gap-1 text-xs px-3 py-1.5 rounded-lg text-red-600 border border-red-200 hover:bg-red-50">
+
+              <button
+                onClick={deleteCurrentQuestion}
+                className="flex items-center gap-1 text-xs px-3 py-1.5 rounded-lg text-red-600 border border-red-200 hover:bg-red-50"
+              >
                 <Trash2 className="w-3.5 h-3.5" /> Supprimer
               </button>
-            </div>
 
-            <button onClick={goNext} disabled={currentIndex === activeQuestions.length - 1}
-              className="p-2 rounded-lg hover:bg-gray-100 disabled:opacity-30 disabled:cursor-not-allowed transition-colors">
-              <ChevronRight className="w-5 h-5" />
-            </button>
+              <button
+                onClick={goNext}
+                disabled={currentIndex === displayedQuestions.length - 1}
+                className="p-2 rounded-lg hover:bg-gray-100 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                title="Question suivante (→ flèche droite)"
+              >
+                <ChevronRight className="w-5 h-5" />
+              </button>
+            </div>
           </div>
-
-          {/* Mini-liste des questions pour navigation rapide */}
-          {activeQuestions.length > 1 && (
-            <div className="mt-3 flex flex-wrap gap-2 justify-center">
-              {activeQuestions.map((q, i) => (
-                <button
-                  key={q.id}
-                  onClick={() => goTo(q.id)}
-                  className={`w-8 h-8 rounded-full text-xs font-bold transition-all ${
-                    q.id === currentId
-                      ? "text-white shadow-md scale-110"
-                      : "bg-gray-100 text-gray-600 hover:bg-gray-200"
-                  }`}
-                  style={{ background: q.id === currentId ? "#4f46e5" : undefined }}
-                >
-                  {i + 1}
-                </button>
-              ))}
-            </div>
-          )}
         </div>
+
+        {/* ═══════════════════════════════════════════════════════════════════════════ */}
+        {/* 📋 BARRE DE NUMÉROTATION DES CAS CLINIQUES */}
+        {/* ═══════════════════════════════════════════════════════════════════════════ */}
+        {isClinicalCase && caseNumbering && (
+          <div className="bg-white rounded-2xl shadow-lg p-4 mb-6">
+            <div className="flex items-center justify-center gap-6">
+              <div
+                style={{
+                  fontSize: "0.875rem",
+                  fontWeight: 700,
+                  color: "#3b82f6",
+                  textTransform: "uppercase",
+                  letterSpacing: "0.05em",
+                }}
+              >
+                📋 CAS {caseNumbering.caseNumber} / {caseNumbering.totalCases}
+              </div>
+
+              <div
+                style={{
+                  fontSize: "1rem",
+                  fontWeight: 600,
+                  color: "#1f2937",
+                }}
+              >
+                Question{" "}
+                <span style={{ color: "#059669", fontWeight: 700 }}>
+                  {caseNumbering.questionIndexInCase}
+                </span>{" "}
+                /{" "}
+                <span style={{ color: "#059669", fontWeight: 700 }}>
+                  {caseNumbering.questionsInCase}
+                </span>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* ── Formulaire — key=currentId force le re-render complet à chaque question ── */}
         <div key={currentId} className="bg-white rounded-2xl shadow-lg p-8">
 
           {/* Texte de la question */}
           <div className="mb-6">
-            <label className="block mb-2 text-gray-700 font-medium">Question</label>
+            <div className="flex items-center justify-between mb-2">
+              <label className="text-gray-700 font-medium">Question</label>
+              <button
+                onClick={handleCopyQuestion}
+                className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg bg-indigo-50 text-indigo-600 hover:bg-indigo-100 transition-colors font-medium border border-indigo-100"
+              >
+                <Copy className="w-3.5 h-3.5" /> Copier
+              </button>
+            </div>
             <textarea
               value={currentQ.question}
               onChange={e => updateCurrentQuestion({ question: e.target.value })}
@@ -545,10 +732,7 @@ console.log("Premier question raw:", JSON.stringify(raw[0], null, 2));
                   </button>
                 </div>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 14px", background: "white", borderTop: "1px solid #f3f4f6" }}>
-                  {/* ✅ FIX: Show whether image is from DB or newly uploaded */}
-                  <span style={{ fontSize: 12, color: "#6b7280" }}>
-                    {currentQ._imageFile ? "✅ Nouvelle image sélectionnée" : "🖼️ Image existante (BD)"}
-                  </span>
+                  <span style={{ fontSize: 12, color: "#6b7280" }}>✅ Image chargée</span>
                   <button onClick={() => fileInputRef.current?.click()}
                     style={{ fontSize: 12, color: "#4f46e5", background: "#eef2ff", border: "1px solid #c7d2fe", borderRadius: 8, padding: "4px 12px", cursor: "pointer" }}>
                     Remplacer
@@ -711,7 +895,7 @@ console.log("Premier question raw:", JSON.stringify(raw[0], null, 2));
           </div>
 
           {/* Statut */}
-          <div className="p-4 bg-gray-50 rounded-xl text-sm">
+          <div className="p-4 bg-gray-50 rounded-xl text-sm mb-6">
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
               <div><span className="text-gray-500">Options :</span> <strong>{currentQ.options.filter(o => o.trim()).length}/{currentQ.options.length}</strong></div>
               <div><span className="text-gray-500">Réponses :</span> <strong className={currentQ.correctAnswers.length > 0 ? "text-green-600" : "text-orange-500"}>{currentQ.correctAnswers.length}</strong></div>
@@ -721,13 +905,15 @@ console.log("Premier question raw:", JSON.stringify(raw[0], null, 2));
           </div>
 
           {/* Navigation bas de page */}
-          <div className="flex items-center justify-between mt-6">
+          <div className="flex items-center justify-between">
             <button onClick={goPrev} disabled={currentIndex === 0}
-              className="flex items-center gap-2 px-4 py-2 rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-50 disabled:opacity-40">
+              className="flex items-center gap-2 px-4 py-2 rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-50 disabled:opacity-40"
+              title="Question précédente (← flèche gauche)">
               <ChevronLeft className="w-4 h-4" /> Précédent
             </button>
-            <button onClick={goNext} disabled={currentIndex === activeQuestions.length - 1}
-              className="flex items-center gap-2 px-4 py-2 rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-50 disabled:opacity-40">
+            <button onClick={goNext} disabled={currentIndex === displayedQuestions.length - 1}
+              className="flex items-center gap-2 px-4 py-2 rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-50 disabled:opacity-40"
+              title="Question suivante (→ flèche droite)">
               Suivant <ChevronRight className="w-4 h-4" />
             </button>
           </div>

@@ -126,7 +126,7 @@ export function Header({
         </Button>
 
         {/* Right side buttons */}
-        <div className="flex items-center gap-2 ml-auto md:ml-0">
+        <div className="flex items-center gap-2 ml-0 md:ml-0 ">
           {/* Theme Toggle */}
           <Button
             variant="ghost"

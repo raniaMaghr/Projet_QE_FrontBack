@@ -7,6 +7,7 @@ import {
   getAllSeriesWithMetadata,
   getDistinctYears,
   getDistinctFaculties,
+  getDistinctObjectives,
   SupabaseSeries,
 } from '../supabaseService';
 import DuplicateDetection from '../components/DuplicateDetection';
@@ -22,31 +23,36 @@ import {
 } from '@/components/ui/select';
 import { Card } from '@/components/ui/card';
 import { useLocation } from "react-router-dom";
+
 /**
- * DESIGN PHILOSOPHY: Détection de doublons avec filtrage simple
+ * DESIGN PHILOSOPHY: Détection de doublons avec filtrage et pagination intelligente
  * - Champ QCM : écrire ou sélectionner ou "Tous"
- * - Filtres par année et faculté
- * - Pagination côté fetch (50 items par page)
+ * - Filtres par année, faculté et objectif
+ * - Pagination par lots de 100 questions pour éviter la saturation mémoire
+ * - Requêtes Supabase optimisées (groupées au lieu de boucles)
+ * - Spinner jusqu'à la fin complète de l'analyse
  */
 
-const ITEMS_PER_PAGE = 50;
+const ITEMS_PER_PAGE = 100; // Réduit de 10000 à 100 pour éviter la saturation
 
 interface FilterState {
   seriesId?: string;
   year?: string;
   faculty?: string;
+  objective?: string;
   searchText?: string;
 }
 
 export default function GlobalDuplicateDetectionPage() {
-  // État des questions et pagination
+  // État des questions
   const [questions, setQuestions] = useState<QCMEntry[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [loadingQuestions, setLoadingQuestions] = useState(true);
+  const [loadingDuplicateDetection, setLoadingDuplicateDetection] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [totalCount, setTotalCount] = useState(0);
   const [currentPage, setCurrentPage] = useState(0);
   const [hasMorePages, setHasMorePages] = useState(true);
   const [isLoadingMore, setIsLoadingMore] = useState(false);
-  const [totalCount, setTotalCount] = useState(0);
 
   // État des filtres
   const [filters, setFilters] = useState<FilterState>({});
@@ -54,6 +60,7 @@ export default function GlobalDuplicateDetectionPage() {
   const [series, setSeries] = useState<SupabaseSeries[]>([]);
   const [years, setYears] = useState<string[]>([]);
   const [faculties, setFaculties] = useState<string[]>([]);
+  const [objectives, setObjectives] = useState<string[]>([]);
   const [loadingFilters, setLoadingFilters] = useState(true);
 
   /**
@@ -62,15 +69,17 @@ export default function GlobalDuplicateDetectionPage() {
   const loadFilterOptions = async () => {
     try {
       setLoadingFilters(true);
-      const [seriesData, yearsData, facultiesData] = await Promise.all([
+      const [seriesData, yearsData, facultiesData, objectivesData] = await Promise.all([
         getAllSeriesWithMetadata(),
         getDistinctYears(),
         getDistinctFaculties(),
+        getDistinctObjectives(),
       ]);
 
       setSeries(seriesData);
       setYears(yearsData);
       setFaculties(facultiesData);
+      setObjectives(objectivesData);
     } catch (err) {
       console.error('Erreur chargement des filtres:', err);
       setError('Impossible de charger les options de filtres.');
@@ -117,22 +126,20 @@ export default function GlobalDuplicateDetectionPage() {
    */
   const handleQcmSelect = async (value: string) => {
     try {
-      setLoading(true);
+      setLoadingQuestions(true);
       setError(null);
 
       let newFilters: FilterState = {
         year: filters.year,
         faculty: filters.faculty,
+        objective: filters.objective,
       };
 
       if (value === 'all') {
-        // Tous les QCM
         setQcmInput('');
       } else if (value === 'write') {
-        // Mode écriture - ne rien faire ici
         return;
       } else {
-        // QCM sélectionné
         newFilters.seriesId = value;
         setQcmInput('');
       }
@@ -146,16 +153,16 @@ export default function GlobalDuplicateDetectionPage() {
       console.error('Erreur sélection QCM:', err);
       setError('Erreur lors de la sélection du QCM.');
     } finally {
-      setLoading(false);
+      setLoadingQuestions(false);
     }
   };
 
   /**
-   * Applique les filtres (année, faculté)
+   * Applique les filtres (année, faculté, objectif)
    */
   const handleFilterChange = async (filterKey: keyof FilterState, value: string | undefined) => {
     try {
-      setLoading(true);
+      setLoadingQuestions(true);
       setError(null);
 
       const newFilters: FilterState = {
@@ -172,7 +179,7 @@ export default function GlobalDuplicateDetectionPage() {
       console.error('Erreur application des filtres:', err);
       setError('Erreur lors de l\'application des filtres.');
     } finally {
-      setLoading(false);
+      setLoadingQuestions(false);
     }
   };
 
@@ -181,12 +188,13 @@ export default function GlobalDuplicateDetectionPage() {
    */
   const handleSearchQcm = async () => {
     try {
-      setLoading(true);
+      setLoadingQuestions(true);
       setError(null);
 
       const newFilters: FilterState = {
         year: filters.year,
         faculty: filters.faculty,
+        objective: filters.objective,
         searchText: qcmInput || undefined,
       };
 
@@ -199,12 +207,12 @@ export default function GlobalDuplicateDetectionPage() {
       console.error('Erreur recherche:', err);
       setError('Erreur lors de la recherche.');
     } finally {
-      setLoading(false);
+      setLoadingQuestions(false);
     }
   };
 
   /**
-   * Charge la page suivante
+   * Charge la page suivante (pagination infinie)
    */
   const loadMoreQuestions = async () => {
     if (!hasMorePages || isLoadingMore) return;
@@ -226,7 +234,7 @@ export default function GlobalDuplicateDetectionPage() {
    */
   const handleResetFilters = async () => {
     try {
-      setLoading(true);
+      setLoadingQuestions(true);
       setQcmInput('');
       setFilters({});
       setCurrentPage(0);
@@ -237,20 +245,16 @@ export default function GlobalDuplicateDetectionPage() {
       console.error('Erreur réinitialisation:', err);
       setError('Erreur lors de la réinitialisation.');
     } finally {
-      setLoading(false);
+      setLoadingQuestions(false);
     }
   };
 
   /**
    * CORRIGÉ : Supprime une question et ajoute l'année et la faculté de sa série 
    * au champ 'tags' (de type ARRAY) de la question conservée
-   * 
-   * @param idToDelete - ID de la question à supprimer
-   * @param idToKeep - ID de la question à conserver (recevra les tags)
    */
   const handleDeleteQuestion = async (idToDelete: string, idToKeep?: string) => {
     try {
-      // Récupère la question à supprimer avec sa série associée
       const { data: questionToDeleteData, error: fetchDeleteError } = await supabase
         .from('qcm_questions')
         .select('series_id')
@@ -259,9 +263,7 @@ export default function GlobalDuplicateDetectionPage() {
 
       if (fetchDeleteError) throw fetchDeleteError;
 
-      // Si une question à conserver est spécifiée, transfère les tags
       if (idToKeep && questionToDeleteData?.series_id) {
-        // Récupère les données de la série de la question à supprimer
         const { data: seriesDelete, error: fetchSeriesDeleteError } = await supabase
           .from('qcm_series')
           .select('year, faculty')
@@ -270,7 +272,6 @@ export default function GlobalDuplicateDetectionPage() {
 
         if (fetchSeriesDeleteError) throw fetchSeriesDeleteError;
 
-        // Récupère les tags existants de la question à conserver
         const { data: questionToKeepData, error: fetchKeepError } = await supabase
           .from('qcm_questions')
           .select('tags')
@@ -279,7 +280,6 @@ export default function GlobalDuplicateDetectionPage() {
 
         if (fetchKeepError) throw fetchKeepError;
 
-        // Construit le tableau de tags final à partir des tags existants
         let finalTagsArray: string[] = [];
         if (questionToKeepData?.tags) {
           if (Array.isArray(questionToKeepData.tags)) {
@@ -291,7 +291,6 @@ export default function GlobalDuplicateDetectionPage() {
 
         const initialTagsLength = finalTagsArray.length;
 
-        // Vérifie et ajoute le tag 'year' s'il n'est pas déjà présent
         if (seriesDelete?.year) {
           const yearTag = `year:${seriesDelete.year}`;
           if (!finalTagsArray.includes(yearTag)) {
@@ -299,7 +298,6 @@ export default function GlobalDuplicateDetectionPage() {
           }
         }
 
-        // Vérifie et ajoute le tag 'faculty' s'il n'est pas déjà présent
         if (seriesDelete?.faculty) {
           const facultyTag = `faculty:${seriesDelete.faculty}`;
           if (!finalTagsArray.includes(facultyTag)) {
@@ -307,7 +305,6 @@ export default function GlobalDuplicateDetectionPage() {
           }
         }
 
-        // Met à jour la question uniquement si des tags ont été ajoutés
         if (finalTagsArray.length > initialTagsLength) {
           const { error: updateError } = await supabase
             .from('qcm_questions')
@@ -320,7 +317,6 @@ export default function GlobalDuplicateDetectionPage() {
         }
       }
 
-      // Supprime la question
       const { error: deleteError } = await supabase
         .from('qcm_questions')
         .delete()
@@ -328,7 +324,6 @@ export default function GlobalDuplicateDetectionPage() {
 
       if (deleteError) throw deleteError;
 
-      // Met à jour l'état local
       setQuestions(prev => prev.filter(q => q.id !== idToDelete));
       setTotalCount(prev => Math.max(0, prev - 1));
 
@@ -339,6 +334,15 @@ export default function GlobalDuplicateDetectionPage() {
     }
   };
 
+  /**
+   * Callback appelé quand DuplicateDetection termine son chargement
+   */
+  const handleDuplicateDetectionLoadingComplete = (hasError: boolean) => {
+    setLoadingDuplicateDetection(false);
+    if (hasError) {
+      console.warn('DuplicateDetection a terminé avec des erreurs');
+    }
+  };
 
   /**
    * Charge les filtres au montage
@@ -353,14 +357,14 @@ export default function GlobalDuplicateDetectionPage() {
   useEffect(() => {
     const loadInitialData = async () => {
       try {
-        setLoading(true);
+        setLoadingQuestions(true);
         await fetchQuestionsPage(0, {});
         setCurrentPage(1);
       } catch (err) {
         console.error('Erreur chargement initial:', err);
         setError('Impossible de charger les questions.');
       } finally {
-        setLoading(false);
+        setLoadingQuestions(false);
       }
     };
 
@@ -375,8 +379,22 @@ export default function GlobalDuplicateDetectionPage() {
     );
   }
 
+  const isLoading = loadingQuestions || loadingDuplicateDetection;
+
   return (
     <div className="flex flex-col gap-6 p-6">
+      {/* Spinner de chargement global */}
+      {isLoading && (
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center">
+          <div className="bg-white rounded-lg p-8 shadow-lg">
+            <LoadingSpinner 
+              size="lg" 
+              message={loadingQuestions ? "Chargement des questions..." : "Analyse des doublons et chargement des métadonnées..."} 
+            />
+          </div>
+        </div>
+      )}
+
       {/* En-tête */}
       <div className="mb-4">
         <h1 className="text-3xl font-bold mb-2">Détection des Doublons</h1>
@@ -391,7 +409,7 @@ export default function GlobalDuplicateDetectionPage() {
           <h2 className="text-lg font-semibold mb-4">Filtres de Recherche</h2>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-4">
           {/* QCM : Écrire ou Sélectionner */}
           <div className="flex flex-col gap-2">
             <label className="text-sm font-medium">QCM / Série</label>
@@ -406,6 +424,7 @@ export default function GlobalDuplicateDetectionPage() {
                     handleSearchQcm();
                   }
                 }}
+                disabled={isLoading}
                 className="flex-1"
               />
               {qcmInput && (
@@ -413,30 +432,12 @@ export default function GlobalDuplicateDetectionPage() {
                   onClick={handleSearchQcm}
                   variant="default"
                   size="sm"
+                  disabled={isLoading}
                 >
                   Chercher
                 </Button>
               )}
             </div>
-            <div className="text-xs text-muted-foreground">
-              Ou sélectionner :
-            </div>
-            <Select
-              value={filters.seriesId || 'all'}
-              onValueChange={handleQcmSelect}
-            >
-              <SelectTrigger>
-                <SelectValue placeholder="Tous les QCM" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">Tous les QCM</SelectItem>
-                {series.map(s => (
-                  <SelectItem key={s.id} value={s.id}>
-                    {s.objective || `Série ${s.id.slice(0, 8)}`}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
           </div>
 
           {/* Filtre Année */}
@@ -447,6 +448,7 @@ export default function GlobalDuplicateDetectionPage() {
               onValueChange={(value) => {
                 handleFilterChange('year', value === 'all' ? undefined : value);
               }}
+              disabled={isLoading}
             >
               <SelectTrigger>
                 <SelectValue placeholder="Toutes les années" />
@@ -470,6 +472,7 @@ export default function GlobalDuplicateDetectionPage() {
               onValueChange={(value) => {
                 handleFilterChange('faculty', value === 'all' ? undefined : value);
               }}
+              disabled={isLoading}
             >
               <SelectTrigger>
                 <SelectValue placeholder="Toutes les facultés" />
@@ -484,6 +487,30 @@ export default function GlobalDuplicateDetectionPage() {
               </SelectContent>
             </Select>
           </div>
+
+          {/* Filtre Objectif */}
+          <div className="flex flex-col gap-2">
+            <label className="text-sm font-medium">Objectif</label>
+            <Select
+              value={filters.objective || 'all'}
+              onValueChange={(value) => {
+                handleFilterChange('objective', value === 'all' ? undefined : value);
+              }}
+              disabled={isLoading}
+            >
+              <SelectTrigger>
+                <SelectValue placeholder="Tous les objectifs" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">Tous les objectifs</SelectItem>
+                {objectives.map(objective => (
+                  <SelectItem key={objective} value={objective}>
+                    {objective}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
         </div>
 
         {/* Bouton réinitialiser */}
@@ -492,6 +519,7 @@ export default function GlobalDuplicateDetectionPage() {
             onClick={handleResetFilters}
             variant="outline"
             size="sm"
+            disabled={isLoading}
           >
             Réinitialiser les filtres
           </Button>
@@ -499,36 +527,21 @@ export default function GlobalDuplicateDetectionPage() {
       </Card>
 
       {/* Compteur de résultats */}
-      {totalCount > 0 && (
+      {totalCount > 0 && !isLoading && (
         <div className="text-sm text-muted-foreground">
           {questions.length} question{questions.length > 1 ? 's' : ''} affichée{questions.length > 1 ? 's' : ''} sur {totalCount}
         </div>
       )}
 
-      {/* État de chargement */}
-      {loading && questions.length === 0 ? (
-        <div className="flex items-center justify-center py-12">
-          <LoadingSpinner size="lg" message="Analyse des questions..." />
-        </div>
-      ) : error ? (
+      {/* État d'erreur */}
+      {error && !isLoading && (
         <div className="p-8 text-red-600 text-center bg-red-50 rounded-lg">
           {error}
         </div>
-      ) : questions.length === 0 ? (
-        <div className="p-8 text-center text-muted-foreground bg-muted rounded-lg">
-          Aucune question trouvée avec les filtres sélectionnés.
-        </div>
-      ) : (
-        <>
-          {/* Composant de détection */}
-          <DuplicateDetection
-            questions={questions}
-            onDeleteQuestion={handleDeleteQuestion}
-            onBack={() => window.history.back()}
-          />
+      )}
 
-          {/* Bouton charger plus */}
-          {hasMorePages && (
+      {/* Bouton charger plus */}
+          {hasMorePages && !loadingDuplicateDetection && totalCount > 0 && (
             <div className="flex justify-center p-4">
               <Button
                 onClick={loadMoreQuestions}
@@ -540,14 +553,33 @@ export default function GlobalDuplicateDetectionPage() {
             </div>
           )}
 
+      {/* Aucun résultat */}
+      {!isLoading && questions.length === 0 && !error && (
+        <div className="p-8 text-center text-muted-foreground bg-muted rounded-lg">
+          Aucune question trouvée avec les filtres sélectionnés.
+        </div>
+      )}
+
+      {/* Contenu principal - visible uniquement quand les données sont chargées */}
+      {!isLoading && questions.length > 0 && (
+        <>
+          {/* Composant de détection avec callback de fin de chargement */}
+          <DuplicateDetection
+            questions={questions}
+            onDeleteQuestion={handleDeleteQuestion}
+            onBack={() => window.history.back()}
+            onLoadingComplete={handleDuplicateDetectionLoadingComplete}
+          />
+
           {/* Message de fin */}
-          {!hasMorePages && questions.length > 0 && (
+          {!hasMorePages && questions.length > 0 && !loadingDuplicateDetection && (
             <div className="text-center text-sm text-muted-foreground p-4 bg-muted rounded-lg">
               Toutes les {totalCount} question{totalCount > 1 ? 's' : ''} ont été chargées.
             </div>
           )}
         </>
       )}
+      
     </div>
   );
 }
