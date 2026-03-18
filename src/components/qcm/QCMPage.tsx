@@ -22,13 +22,12 @@ import {
 import { Separator } from "../ui/separator";
 import { ScrollArea } from "../ui/scroll-area";
 
-// --- TYPES ---
-interface Option {
+export interface Option {
   letter: string;
   text: string;
 }
 
-interface Question {
+export interface Question {
   id: number;
   casCliniqueId: string;
   numero: number;
@@ -41,7 +40,7 @@ interface Question {
   tags: string[];
 }
 
-interface CasClinique {
+export interface CasClinique {
   id: string;
   numero: number;
   contenu: string;
@@ -67,7 +66,6 @@ interface Highlight {
   containerId: string;
 }
 
-// --- DONNÉES MOCK ---
 const mockCasClinique: CasClinique = {
   id: "cas_6",
   numero: 6,
@@ -159,14 +157,33 @@ Devant une maladie hémolytique sévère avec anasarque :
   },
 ];
 
-// --- COMPOSANT PRINCIPAL ---
 interface QCMPageProps {
   theme?: string;
   mode?: "entrainement" | "examen" | "serie";
   onExit?: () => void;
+  externalQuestions?: Question[];
+  externalCasCliniques?: CasClinique[];
 }
 
-export default function QCMPage({ theme = "light", mode = "entrainement", onExit }: QCMPageProps) {
+export default function QCMPage({
+  theme = "light",
+  mode = "entrainement",
+  onExit,
+  externalQuestions,
+  externalCasCliniques,
+}: QCMPageProps) {
+
+  const questions = externalQuestions && externalQuestions.length > 0
+    ? externalQuestions
+    : mockQuestions;
+
+  const casCliniquesMap = new Map<string, CasClinique>(
+    (externalCasCliniques && externalCasCliniques.length > 0
+      ? externalCasCliniques
+      : [mockCasClinique]
+    ).map((c) => [c.id, c])
+  );
+
   const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0);
   const [userAnswers, setUserAnswers] = useState<Map<number, UserAnswer>>(new Map());
   const [showNavigation, setShowNavigation] = useState(false);
@@ -175,9 +192,9 @@ export default function QCMPage({ theme = "light", mode = "entrainement", onExit
   const [highlights, setHighlights] = useState<Highlight[]>([]);
   const [highlightMode, setHighlightMode] = useState(false);
 
-  const currentQuestion = mockQuestions[currentQuestionIndex];
-  const currentCas = mockCasClinique;
-  const currentAnswer = userAnswers.get(currentQuestion.id);
+  const currentQuestion = questions[currentQuestionIndex];
+  const currentCas = casCliniquesMap.get(currentQuestion?.casCliniqueId) ?? mockCasClinique;
+  const currentAnswer = userAnswers.get(currentQuestion?.id);
 
   useEffect(() => {
     const interval = setInterval(() => {
@@ -235,7 +252,7 @@ export default function QCMPage({ theme = "light", mode = "entrainement", onExit
   };
 
   const handleNext = () => {
-    if (currentQuestionIndex < mockQuestions.length - 1) {
+    if (currentQuestionIndex < questions.length - 1) {
       setCurrentQuestionIndex(currentQuestionIndex + 1);
     }
   };
@@ -265,7 +282,7 @@ export default function QCMPage({ theme = "light", mode = "entrainement", onExit
     );
   };
 
-  // Gestion du surlignage de texte
+
   const handleTextSelection = () => {
     if (!highlightMode) return;
 
@@ -279,7 +296,6 @@ export default function QCMPage({ theme = "light", mode = "entrainement", onExit
     const container = range.commonAncestorContainer.parentElement;
     if (!container) return;
 
-    // Créer un nouveau highlight
     const newHighlight: Highlight = {
       id: `highlight-${Date.now()}-${Math.random()}`,
       text: selectedText,
@@ -306,12 +322,9 @@ export default function QCMPage({ theme = "light", mode = "entrainement", onExit
       return text;
     }
 
-    // Simple rendering - pour une implémentation complète, il faudrait gérer les overlaps
-    let result = text;
     const parts: { text: string; isHighlighted: boolean; id?: string }[] = [];
     let lastIndex = 0;
 
-    // Pour simplifier, on surligne juste les occurrences du texte
     containerHighlights.forEach(highlight => {
       const index = text.indexOf(highlight.text, lastIndex);
       if (index !== -1) {
@@ -329,7 +342,7 @@ export default function QCMPage({ theme = "light", mode = "entrainement", onExit
 
     return (
       <>
-        {parts.map((part, index) => 
+        {parts.map((part, index) =>
           part.isHighlighted ? (
             <mark
               key={`${part.id}-${index}`}
@@ -347,12 +360,10 @@ export default function QCMPage({ theme = "light", mode = "entrainement", onExit
     );
   };
 
-  // Fonction pour mettre en évidence les valeurs biologiques
   const highlightBiologicalValues = (text: string) => {
-    // Regex pour détecter les valeurs numériques avec unités
     const regex = /(\d+[\s,]*\d*)\s*(g\/dl|mm³|µmol\/L|\/mm³|%)/gi;
     const parts = text.split(regex);
-    
+
     return parts.map((part, index) => {
       if (regex.test(part) || /g\/dl|mm³|µmol\/L|\/mm³|%/i.test(part)) {
         return <span key={index} className="font-medium text-primary">{part}</span>;
@@ -386,7 +397,9 @@ export default function QCMPage({ theme = "light", mode = "entrainement", onExit
     }
   };
 
-  const progressPercent = ((currentQuestionIndex + 1) / mockQuestions.length) * 100;
+  const progressPercent = ((currentQuestionIndex + 1) / questions.length) * 100;
+
+  if (!currentQuestion) return null;
 
   return (
     <div className="min-h-screen bg-background qcm-professional">
@@ -408,7 +421,7 @@ export default function QCMPage({ theme = "light", mode = "entrainement", onExit
                 <div>
                   <h1 className="text-sm">QCM - Mode {mode}</h1>
                   <p className="text-xs text-muted-foreground">
-                    Question {currentQuestionIndex + 1} / {mockQuestions.length}
+                    Question {currentQuestionIndex + 1} / {questions.length}
                   </p>
                 </div>
               </div>
@@ -470,42 +483,45 @@ export default function QCMPage({ theme = "light", mode = "entrainement", onExit
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
           {/* Colonne principale */}
           <div className="lg:col-span-8 space-y-6">
+
             {/* Cas Clinique */}
-            <motion.div
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.3 }}
-            >
-              <Card className="border-2 border-primary/20">
-                <CardHeader className="bg-primary/5">
-                  <div className="flex items-start justify-between">
-                    <div>
-                      <CardTitle className="flex items-center gap-2">
-                        <BookOpen className="text-primary" size={20} />
-                        Cas clinique N°{currentCas.numero}
-                      </CardTitle>
+            {currentCas && currentCas.contenu && (
+              <motion.div
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.3 }}
+              >
+                <Card className="border-2 border-primary/20">
+                  <CardHeader className="bg-primary/5">
+                    <div className="flex items-start justify-between">
+                      <div>
+                        <CardTitle className="flex items-center gap-2">
+                          <BookOpen className="text-primary" size={20} />
+                          Cas clinique N°{currentCas.numero}
+                        </CardTitle>
+                      </div>
+                      <Badge variant="outline" className="bg-primary/10">
+                        {currentCas.specialite}
+                      </Badge>
                     </div>
-                    <Badge variant="outline" className="bg-primary/10">
-                      {currentCas.specialite}
-                    </Badge>
-                  </div>
-                </CardHeader>
-                <CardContent className="pt-6">
-                  <div 
-                    className="prose prose-sm max-w-none dark:prose-invert qcm-content"
-                    onMouseUp={handleTextSelection}
-                    data-highlight-type="cas"
-                    data-highlight-id={currentCas.id}
-                  >
-                    {currentCas.contenu.split("\n").map((line, index) => (
-                      <p key={index} className="whitespace-pre-wrap leading-relaxed">
-                        {highlightBiologicalValues(line)}
-                      </p>
-                    ))}
-                  </div>
-                </CardContent>
-              </Card>
-            </motion.div>
+                  </CardHeader>
+                  <CardContent className="pt-6">
+                    <div
+                      className="prose prose-sm max-w-none dark:prose-invert qcm-content"
+                      onMouseUp={handleTextSelection}
+                      data-highlight-type="cas"
+                      data-highlight-id={currentCas.id}
+                    >
+                      {currentCas.contenu.split("\n").map((line, index) => (
+                        <p key={index} className="whitespace-pre-wrap leading-relaxed">
+                          {highlightBiologicalValues(line)}
+                        </p>
+                      ))}
+                    </div>
+                  </CardContent>
+                </Card>
+              </motion.div>
+            )}
 
             {/* Question */}
             <motion.div
@@ -537,7 +553,7 @@ export default function QCMPage({ theme = "light", mode = "entrainement", onExit
                   </div>
                 </CardHeader>
                 <CardContent className="pt-6 space-y-4">
-                  <div 
+                  <div
                     className="text-lg qcm-content"
                     onMouseUp={handleTextSelection}
                     data-highlight-type="question"
@@ -552,8 +568,7 @@ export default function QCMPage({ theme = "light", mode = "entrainement", onExit
                       const isSelected = currentAnswer?.selected.includes(option.letter);
                       const isValidated = currentAnswer?.isValidated;
                       const isCorrect = currentQuestion.reponseCorrecte.includes(option.letter);
-                      const showCorrection = isValidated && mode === "entrainement";
-
+                      const showCorrection = isValidated && (mode === "entrainement" || mode === "serie");
                       return (
                         <motion.div
                           key={option.letter}
@@ -581,7 +596,7 @@ export default function QCMPage({ theme = "light", mode = "entrainement", onExit
                               >
                                 {option.letter}
                               </div>
-                              <span 
+                              <span
                                 className="flex-1 qcm-content"
                                 onMouseUp={handleTextSelection}
                                 data-highlight-type="option"
@@ -602,10 +617,9 @@ export default function QCMPage({ theme = "light", mode = "entrainement", onExit
                     })}
                   </div>
 
-                  {/* Explication */}
+                  {/* Explication — même logique exacte que l'original */}
                   <AnimatePresence>
-                    {currentAnswer?.isValidated && mode === "entrainement" && (
-                      <motion.div
+                  {currentAnswer?.isValidated && (                      <motion.div
                         initial={{ opacity: 0, height: 0 }}
                         animate={{ opacity: 1, height: "auto" }}
                         exit={{ opacity: 0, height: 0 }}
@@ -629,7 +643,7 @@ export default function QCMPage({ theme = "light", mode = "entrainement", onExit
                               {currentAnswer.isCorrect ? "Bonne réponse !" : "Réponse incorrecte"}
                             </h4>
                           </div>
-                          <div 
+                          <div
                             className="prose prose-sm max-w-none dark:prose-invert ml-7 qcm-content"
                             onMouseUp={handleTextSelection}
                             data-highlight-type="question"
@@ -673,7 +687,7 @@ export default function QCMPage({ theme = "light", mode = "entrainement", onExit
                       <Button
                         variant="outline"
                         onClick={handleNext}
-                        disabled={currentQuestionIndex === mockQuestions.length - 1}
+                        disabled={currentQuestionIndex === questions.length - 1}
                       >
                         <ChevronRight size={16} />
                       </Button>
@@ -697,7 +711,7 @@ export default function QCMPage({ theme = "light", mode = "entrainement", onExit
                 </CardHeader>
                 <CardContent>
                   <div className="grid grid-cols-5 gap-2">
-                    {mockQuestions.map((q, index) => {
+                    {questions.map((q, index) => {
                       const status = getQuestionStatus(q.id);
                       return (
                         <Button
@@ -773,14 +787,14 @@ export default function QCMPage({ theme = "light", mode = "entrainement", onExit
             <div className="text-center">
               <div className="text-4xl mb-2">
                 {Array.from(userAnswers.values()).filter((a) => a.isCorrect).length} /{" "}
-                {mockQuestions.length}
+                {questions.length}
               </div>
               <p className="text-muted-foreground">Questions correctes</p>
             </div>
             <Progress
               value={
                 (Array.from(userAnswers.values()).filter((a) => a.isCorrect).length /
-                  mockQuestions.length) *
+                  questions.length) *
                 100
               }
             />
@@ -797,9 +811,7 @@ export default function QCMPage({ theme = "light", mode = "entrainement", onExit
   );
 }
 
-// --- FONCTION UTILITAIRE ---
 function highlightBiologicalValues(text: string) {
-  // Détecte et colore les valeurs biologiques
   const patterns = [
     { regex: /(\d+[\s]*(?:g\/dl|g\/L|mm³|µmol\/L|mmol\/L|\/mm³))/gi, color: "text-primary" },
     { regex: /(leucocytes|hémoglobine|plaquettes|réticulocytes|bilirubine)/gi, color: "font-medium" },

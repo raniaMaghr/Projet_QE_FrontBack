@@ -1,3 +1,7 @@
+/**
+ * Point d'entrée principal de l'application - CORRIGÉ
+ */
+
 import React, { useEffect, useState, Suspense, lazy } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { AuthProvider, ThemeProvider, useAuth } from './contexts';
@@ -22,6 +26,11 @@ import { Toaster } from './components/ui/sonner';
 import { RoleProtectedRoute } from "./contexts/RoleProtectedRoute";
 import SeriesManagementPage from './components/SeriesManagement';
 import SeriesEditPage from './pages/SeriesEditPage';
+
+import { SeriesListPage } from "@/pages/SeriesListPage";
+import QCMSeriesPage from "@/pages/QCMSeriesPage";
+
+
 const RoleManager = lazy(() => import('./pages/SuperAdmin/RoleManager'));
 // ─────────────────────────────────────────────
 // Routes protégées
@@ -104,7 +113,10 @@ function AppRoutes() {
         {/*<Route path="/tutorials"       element={<div className="p-8 text-center">Tutoriels — En développement</div>} />*/}
         <Route path="/profile"         element={<div className="p-8 text-center">Profil — En développement</div>} />
         <Route path="/settings"        element={<div className="p-8 text-center">Paramètres — En développement</div>} />
-        
+        <Route path="/series/:speciality/:course/:year" element={<SeriesListPage />} />
+        <Route path="/qcm/series/:seriesId"element={<QCMSeriesPage />} />
+        <Route path="/qcm/series/:seriesId"             element={<QCMSeriesPage />} />
+      
       </Route>
 
       {/* Admin only */}

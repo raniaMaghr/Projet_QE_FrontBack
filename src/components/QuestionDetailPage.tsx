@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { QCMEntry, SeriesMetadata } from "../types";
-import { ArrowLeft, Save, ChevronLeft, ChevronRight, Trash2, Plus, X, ImagePlus } from "lucide-react";
+import { ArrowLeft, Save, ChevronLeft, ChevronRight, Trash2, Plus, X, ImagePlus, Copy, Check } from "lucide-react";
 import { toast } from "sonner";
 import { supabase } from "../supabaseClient";
 import {
@@ -12,8 +12,11 @@ import {
   convertSupabaseSeriesToMetadata,
 } from "../supabaseService";
 
+// ═══════════════════════════════════════════════════════════════════════════
+// 📋 CONSTANTES ET TYPES
+// ═══════════════════════════════════════════════════════════════════════════
 
-const TAGS = ["Clinique", "Anatomie", "Biologie", "Physiologie", "Épidémiologie"];
+const TAGS = ["Clinique", "Anatomie", "Biologie", "Physiologie", "Épidémiologie", "Pharmacologie"];
 
 interface SubCourse {
   id: string;
@@ -42,37 +45,98 @@ interface CaseNumbering {
 const useKeyboardNavigation = (
   onPrevious: () => void,
   onNext: () => void,
-  onSave: () => void,        // ← ajouter
+  onSelectAnswer: (letter: string) => void,
+  onSave: () => void,
+  onCopy: () => void,
   enabled: boolean = true
 ) => {
-  const saveRef = useRef(onSave);
-  const prevRef = useRef(onPrevious);
-  const nextRef = useRef(onNext);
-
-  useEffect(() => { saveRef.current = onSave; });
-  useEffect(() => { prevRef.current = onPrevious; });
-  useEffect(() => { nextRef.current = onNext; });
-
   useEffect(() => {
     if (!enabled) return;
+
     const handleKeyDown = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement;
-      const isEditable = target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.tagName === "SELECT" || target.isContentEditable;
-      if (!isEditable) {
-        if (event.key === "ArrowLeft") { event.preventDefault(); prevRef.current(); }
-        if (event.key === "ArrowRight") { event.preventDefault(); nextRef.current(); }
-        if (event.key === "Enter") { event.preventDefault(); saveRef.current(); }
+
+      // éviter conflit si l'utilisateur tape dans un input
+      if (target.tagName === "INPUT" || target.tagName === "TEXTAREA") {
+        return;
       }
-      if (event.ctrlKey && event.key === "s") { event.preventDefault(); saveRef.current(); }
+
+      const key = event.key.toUpperCase();
+
+      // navigation
+      if (event.key === "ArrowLeft") {
+        event.preventDefault();
+        onPrevious();
+        return;
+      }
+
+      if (event.key === "ArrowRight") {
+        event.preventDefault();
+        onNext();
+        return;
+      }
+
+    // sélectionner réponses A → I ou 1 → 9
+    const azertyMap: Record<string, string> = {
+      A: "A",
+      Z: "B",
+      E: "C",
+      R: "D",
+      T: "E",
+      Y: "F",
+      U: "G",
+      I: "H",
+      O: "I",
     };
+    const validNumbers = ["1","2","3","4","5","6","7","8","9"];
+
+    // AZERTY
+    if (azertyMap[key]) {
+      event.preventDefault();
+      onSelectAnswer(azertyMap[key]);
+      return;
+    }
+
+    // chiffres
+    if (validNumbers.includes(key)) {
+      event.preventDefault();
+
+      const index = parseInt(key) - 1;
+      const letter = String.fromCharCode(65 + index); // 65 = A
+
+      onSelectAnswer(letter);
+      return;
+    }
+
+      // sauvegarde
+      if (event.key === "Enter") {
+        event.preventDefault();
+        onSave();
+        return;
+      }
+
+      // copier question
+      if (event.ctrlKey) {
+        event.preventDefault();
+        onCopy();
+        return;
+      }
+    };
+
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [enabled]);
+  }, [onPrevious, onNext, onSelectAnswer, onSave, onCopy, enabled]);
 };
 
 
-export default function QuestionDetailPage() {
+// ═══════════════════════════════════════════════════════════════════════════
+// 🎯 COMPOSANT PRINCIPAL
+// ═══════════════════════════════════════════════════════════════════════════
 
+export default function QuestionDetailPage() {
+  // ──────────────────────────────────────────────────────────────────────────
+  // 📌 ÉTATS PRINCIPAUX
+  // ──────────────────────────────────────────────────────────────────────────
   const { questionId } = useParams<{ questionId: string }>();
   const navigate = useNavigate();
 
@@ -84,6 +148,8 @@ export default function QuestionDetailPage() {
   const [loading, setLoading] = useState(true);
   const [seriesId, setSeriesId] = useState<string | null>(null);
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
+  const [copiedQuestionId, setCopiedQuestionId] = useState<string | null>(null);
+  const autoSaveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   // ──────────────────────────────────────────────────────────────────────────
   // 🖼️ ÉTATS : Gestion des images
@@ -158,6 +224,121 @@ export default function QuestionDetailPage() {
       )
     );
     setHasUnsavedChanges(true);
+    // Déclencher la sauvegarde automatique
+    triggerAutoSave();
+  };
+
+const updateSubCourse = (subCourse: string) => {
+  console.log("test")
+  setQuestions((prev) =>
+    prev.map((q) => {
+      // CAS CLINIQUE → appliquer à toutes les questions du même cas
+      if (currentQ.clinicalCaseId && q.clinicalCaseId === currentQ.clinicalCaseId) {
+        return {
+          ...q,
+          subCourse,
+          updatedAt: new Date().toISOString(),
+        };
+      }
+
+      // QUESTION SIMPLE → modifier uniquement cette question
+      if (!currentQ.clinicalCaseId && q.id === currentQ.id) {
+        return {
+          ...q,
+          subCourse,
+          updatedAt: new Date().toISOString(),
+        };
+      }
+
+      return q;
+    })
+  );
+
+  setHasUnsavedChanges(true);
+  triggerAutoSave();
+};
+
+  /**
+   * Déclenche la sauvegarde automatique avec délai
+   */
+  const triggerAutoSave = () => {
+    // Annuler le timeout précédent s'il existe
+    if (autoSaveTimeoutRef.current) {
+      clearTimeout(autoSaveTimeoutRef.current);
+    }
+
+    // Définir un nouveau timeout pour sauvegarder après 3 secondes d'inactivité
+    autoSaveTimeoutRef.current = setTimeout(() => {
+      handleAutoSave();
+    }, 3000);
+  };
+
+  /**
+   * Sauvegarde automatique de la question
+   */
+  const handleAutoSave = async () => {
+    if (!hasUnsavedChanges) return;
+
+    try {
+      let imageUrl: string | null = currentQ.imageUrl ?? null;
+
+      // Upload vers Supabase Storage si un nouveau fichier a été sélectionné
+      if (imageFile) {
+        const ext = imageFile.name.split(".").pop();
+        const fileName = `${currentQ.id}-${Date.now()}.${ext}`;
+
+        const { error: uploadError } = await supabase.storage
+          .from("question-images")
+          .upload(fileName, imageFile, { upsert: true });
+
+        if (uploadError) throw uploadError;
+
+        const { data: urlData } = supabase.storage
+          .from("question-images")
+          .getPublicUrl(fileName);
+
+        imageUrl = urlData.publicUrl;
+        setImageFile(null);
+      }
+
+     /* await updateQuestion(currentQ.id, {
+        ...currentQ,
+        imageUrl,
+      });*/
+
+// CAS CLINIQUE
+if (currentQ.clinicalCaseId) {
+
+  const caseQuestions = questions.filter(
+    (q) => q.clinicalCaseId === currentQ.clinicalCaseId
+  );
+
+  await Promise.all(
+    caseQuestions.map((q) => {
+
+      // appliquer subCourse seulement
+      const updated = {
+        subCourse: currentQ.subCourse
+      };
+
+      return updateQuestion(q.id, updated);
+    })
+  );
+
+}
+
+  await updateQuestion(currentQ.id, {
+    ...currentQ,
+    imageUrl
+  });
+
+
+
+      console.log("✅ Auto-sauvegarde effectuée");
+      setHasUnsavedChanges(false);
+    } catch (err) {
+      console.error("Erreur auto-sauvegarde:", err);
+    }
   };
 
   /**
@@ -171,33 +352,74 @@ export default function QuestionDetailPage() {
         : [...current, letter],
     });
   };
+  const selectAnswerByLetter = (letter: string) => {
+  const index = letter.charCodeAt(0) - 65;
+
+  if (!currentQ.options[index]) return;
+
+  toggleCorrectAnswer(letter);
+};
 
   /**
-   * Bascule un tag
+   * Bascule un tag et ajoute automatiquement "Clinique" si un tag est sélectionné
    */
-  const toggleTag = (tag: string) => {
-    const current = currentQ.tags || [];
-    const newTags = current.includes(tag)
-      ? current.filter((t) => t !== tag)
-      : [...current, tag];
+const toggleTag = (tag: string) => {
+  const current = currentQ.tags || [];
 
-    // Si c'est un cas clinique, mettre à jour TOUTES les questions du même cas
-    if (currentQ.clinicalCaseId) {
-      setQuestions((prev) =>
-        prev.map((q) =>
-          q.clinicalCaseId === currentQ.clinicalCaseId
-            ? { ...q, tags: newTags, updatedAt: new Date().toISOString() }
-            : q
-        )
-      );
-      console.log(
-        `✅ Tag "${tag}" appliqué à toutes les questions du cas clinique: ${currentQ.clinicalCaseId}`
-      );
-      setHasUnsavedChanges(true);
-    } else {
-      // Sinon, mettre à jour seulement la question actuelle
-      updateCurrentQuestion({ tags: newTags });
-      console.log(`✅ Tag "${tag}" appliqué à la question: ${currentQ.id}`);
+  const newTags = current.includes(tag)
+    ? current.filter((t) => t !== tag)
+    : [...current, tag];
+
+  if (currentQ.clinicalCaseId) {
+    setQuestions((prev) =>
+      prev.map((q) =>
+        q.clinicalCaseId === currentQ.clinicalCaseId
+          ? { ...q, tags: newTags, updatedAt: new Date().toISOString() }
+          : q
+      )
+    );
+  } else {
+    setQuestions((prev) =>
+      prev.map((q) =>
+        q.id === currentQ.id
+          ? { ...q, tags: newTags, updatedAt: new Date().toISOString() }
+          : q
+      )
+    );
+  }
+
+  setHasUnsavedChanges(true);
+  triggerAutoSave();
+};
+
+  /**
+   * 📋 NOUVELLE FONCTIONNALITÉ : Copie la question complète (question + propositions + tags + réponses)
+   */
+  const copyQuestionToClipboard = async () => {
+    const optionLetters = currentQ.options.map((_: string, i: number) =>
+      String.fromCharCode(65 + i)
+    );
+
+    const questionText = `
+QUESTION: ${currentQ.question}
+
+PROPOSITIONS:
+${currentQ.options.map((opt, i) => `${optionLetters[i]}) ${opt}`).join("\n")}
+
+RÉPONSE(S) CORRECTE(S): ${currentQ.correctAnswers.join(", ") || "Non définie"}
+
+TAGS: ${currentQ.tags?.join(", ") || "Aucun"}
+${currentQ.aiJustification ? `\nJUSTIFICATION: ${currentQ.aiJustification}` : ""}
+    `.trim();
+
+    try {
+      await navigator.clipboard.writeText(questionText);
+      setCopiedQuestionId(currentQ.id);
+      toast.success("✅ Question copiée dans le presse-papiers");
+      setTimeout(() => setCopiedQuestionId(null), 2000);
+    } catch (err) {
+      console.error("Erreur copie:", err);
+      toast.error("Erreur lors de la copie");
     }
   };
 
@@ -239,7 +461,9 @@ export default function QuestionDetailPage() {
     updateCurrentQuestion({ options: newOptions });
   };
 
-
+  /**
+   * Gère le changement d'image
+   */
   const handleImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -256,9 +480,12 @@ export default function QuestionDetailPage() {
     setImageFile(file);
     setImagePreview(URL.createObjectURL(file));
     setHasUnsavedChanges(true);
+    triggerAutoSave();
   };
 
-  
+  /**
+   * Supprime l'image
+   */
   const handleRemoveImage = () => {
     setImageFile(null);
     setImagePreview(null);
@@ -266,7 +493,9 @@ export default function QuestionDetailPage() {
     if (fileInputRef.current) fileInputRef.current.value = "";
   };
 
-  
+  /**
+   * Sauvegarde la question
+   */
   const handleSave = async () => {
     try {
       let imageUrl: string | null = currentQ.imageUrl ?? null;
@@ -308,7 +537,7 @@ export default function QuestionDetailPage() {
 
       toast.success("✅ Modifications sauvegardées");
       setHasUnsavedChanges(false);
-      navigate(`/series/${seriesId}`);
+      //navigate(`/series/${seriesId}`);
     } catch (err) {
       console.error("Erreur sauvegarde:", err);
       toast.error("Erreur lors de la sauvegarde");
@@ -316,6 +545,9 @@ export default function QuestionDetailPage() {
     }
   };
 
+  /**
+   * Ajoute un sous-cours
+   */
   const handleAddSubCourse = async () => {
     const trimmed = newSubCourse.trim();
     if (!trimmed) {
@@ -356,30 +588,29 @@ export default function QuestionDetailPage() {
   };
 
   /**
-   * Navigation avec confirmation si modifications non sauvegardées
+   * Navigation avec sauvegarde automatique si modifications non sauvegardées
    */
   const navigateQuestion = (direction: "prev" | "next") => {
-    if (
-      hasUnsavedChanges &&
-      !window.confirm("Modifications non sauvegardées. Continuer ?")
-    )
-      return;
+    // 🎯 NOUVELLE FONCTIONNALITÉ : Sauvegarde automatique avant navigation
+    if (hasUnsavedChanges) {
+      handleAutoSave();
+    }
     const newIndex = direction === "prev" ? currentIndex - 1 : currentIndex + 1;
     if (newIndex < 0 || newIndex >= questions.length) return;
     setCurrentIndex(newIndex);
     setHasUnsavedChanges(false);
+    setImagePreview(null);
     navigate(`/question/${questions[newIndex].id}`);
   };
 
   /**
-   * Retour à la série avec confirmation
+   * Retour à la série avec sauvegarde automatique
    */
   const handleBack = () => {
-    if (
-      hasUnsavedChanges &&
-      !window.confirm("Modifications non sauvegardées. Quitter sans sauvegarder ?")
-    )
-      return;
+    // 🎯 NOUVELLE FONCTIONNALITÉ : Sauvegarde automatique avant retour
+    if (hasUnsavedChanges) {
+      handleAutoSave();
+    }
     navigate(-1);
   };
 
@@ -402,7 +633,18 @@ export default function QuestionDetailPage() {
   };
 
   // Activer la navigation au clavier
-  useKeyboardNavigation(handlePreviousQuestion, handleNextQuestion ,handleSave);
+  useKeyboardNavigation(
+  handlePreviousQuestion,
+  handleNextQuestion,
+  selectAnswerByLetter,
+  handleSave,
+  copyQuestionToClipboard
+);
+
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 📡 EFFETS : Chargement des données
+  // ═══════════════════════════════════════════════════════════════════════════
 
   useEffect(() => {
     if (!questionId) return;
@@ -479,7 +721,7 @@ export default function QuestionDetailPage() {
         console.log(`📍 Position actuelle: ${clickedIndex + 1}/${converted.length}`);
       } catch (err) {
         console.error("Erreur chargement:", err);
-        toast.error("Impossible de charger la question");
+        toast.error("Erreur lors du chargement");
       } finally {
         setLoading(false);
       }
@@ -506,6 +748,28 @@ export default function QuestionDetailPage() {
     }
   };
 
+  /**
+   * 🎯 NOUVELLE FONCTIONNALITÉ : Sauvegarde automatique avant fermeture de la page
+   */
+  useEffect(() => {
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (hasUnsavedChanges) {
+        handleAutoSave();
+        e.preventDefault();
+        e.returnValue = "";
+      }
+    };
+
+    window.addEventListener("beforeunload", handleBeforeUnload);
+    return () => {
+      window.removeEventListener("beforeunload", handleBeforeUnload);
+      // Nettoyer le timeout à la démontage
+      if (autoSaveTimeoutRef.current) {
+        clearTimeout(autoSaveTimeoutRef.current);
+      }
+    };
+  }, [hasUnsavedChanges]);
+
   // ═══════════════════════════════════════════════════════════════════════════
   // 🎨 RENDU
   // ═══════════════════════════════════════════════════════════════════════════
@@ -519,6 +783,10 @@ export default function QuestionDetailPage() {
   }
 
   const currentQ = questions[currentIndex];
+
+  if (currentQ && (!currentQ.tags || currentQ.tags.length === 0)) {
+    updateCurrentQuestion({ tags: ["Clinique"] });
+  }
 
   if (!currentQ || !metadata) {
     return (
@@ -598,7 +866,7 @@ export default function QuestionDetailPage() {
             {hasUnsavedChanges && (
               <div className="mt-2 text-orange-600 text-sm flex items-center gap-1">
                 <span className="w-2 h-2 bg-orange-500 rounded-full inline-block" />
-                Modifications non sauvegardées
+                Modifications non sauvegardées (auto-sauvegarde en cours...)
               </div>
             )}
           </div>
@@ -685,9 +953,32 @@ export default function QuestionDetailPage() {
         {/* 📝 CONTENU PRINCIPAL */}
         {/* ═══════════════════════════════════════════════════════════════════════════ */}
         <div className="bg-white rounded-2xl shadow-lg p-8">
-          {/* Question */}
+          {/* Question avec bouton de copie */}
           <div className="mb-6">
-            <label className="block mb-2 text-gray-700 font-medium">Question</label>
+            <div className="flex items-center justify-between mb-2">
+              <label className="block text-gray-700 font-medium">Question</label>
+              <button
+                onClick={copyQuestionToClipboard}
+                className="flex items-center gap-2 px-3 py-1 text-sm rounded-lg transition-colors"
+                style={{
+                  background: copiedQuestionId === currentQ.id ? "#10b981" : "#e0e7ff",
+                  color: copiedQuestionId === currentQ.id ? "white" : "#4f46e5",
+                }}
+                title="Copier la question complète"
+              >
+                {copiedQuestionId === currentQ.id ? (
+                  <>
+                    <Check className="w-4 h-4" />
+                    Copié
+                  </>
+                ) : (
+                  <>
+                    <Copy className="w-4 h-4" />
+                    Copier
+                  </>
+                )}
+              </button>
+            </div>
             <textarea
               value={currentQ.question}
               onChange={(e) => updateCurrentQuestion({ question: e.target.value })}
@@ -963,7 +1254,7 @@ export default function QuestionDetailPage() {
                       <button
                         onClick={() => removeOption(i)}
                         className="p-2 rounded-lg transition-colors"
-                        style={{ color: "#dc2626" }}
+                        style={{ color: "#dc2626", background: "#fee2e2" }}
                       >
                         <Trash2 className="w-4 h-4" />
                       </button>
@@ -1034,6 +1325,7 @@ export default function QuestionDetailPage() {
                       : "bg-white text-gray-700 border-gray-300"
                   }`}
                   style={{ background: currentQ.tags?.includes(tag) ? "#4f46e5" : "" }}
+                  title={tag === "Clinique" ? "Sélectionné automatiquement quand un autre tag est choisi" : ""}
                 >
                   {tag}
                 </button>
@@ -1065,7 +1357,7 @@ export default function QuestionDetailPage() {
             <div className="flex gap-2">
               <select
                 value={currentQ.subCourse || ""}
-                onChange={(e) => updateCurrentQuestion({ subCourse: e.target.value || null })}
+                onChange={(e) => updateSubCourse(e.target.value)}
                 disabled={!courseId}
                 className="flex-1 p-3 border border-gray-300 rounded-lg bg-white focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition-shadow disabled:bg-gray-50 disabled:text-gray-400"
               >

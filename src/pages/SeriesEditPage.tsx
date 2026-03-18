@@ -15,7 +15,7 @@ import {
   convertSupabaseQuestionToQCMEntry,
 } from "../supabaseService";
 
-const TAGS = ["Clinique", "Anatomie", "Biologie", "Physiologie", "Épidémiologie","pharmacologie"];
+const TAGS = ["Clinique", "Anatomie", "Biologie", "Physiologie", "Épidémiologie", "Pharmacologie"];
 
 interface SubCourse {
   id: string;
@@ -43,62 +43,107 @@ interface CaseNumbering {
   questionsInCase: number;
   questionIndexInCase: number;
 }
+const FACULTIES = ["FMT", "FMM", "FMS", "FMSF"];
 
+const YEARS = Array.from({ length: 2035 - 2019 + 1 }, (_, i) =>
+  String(2019 + i)
+);
+
+interface ObjectiveOption {
+  id: string;
+  name: string;
+  specialty: string;
+  level: string;
+  bank_size: number;
+}
+// ═══════════════════════════════════════════════════════════════════════════
+// 🎣 HOOK PERSONNALISÉ : Navigation au clavier
+// ═══════════════════════════════════════════════════════════════════════════
 
 const useKeyboardNavigation = (
   onPrevious: () => void,
   onNext: () => void,
+  onSelectAnswer: (letter: string) => void,
   onSave: () => void,
+  onCopy: () => void,
   enabled: boolean = true
 ) => {
-  const saveRef = useRef(onSave);
-  const prevRef = useRef(onPrevious);
-  const nextRef = useRef(onNext);
-
-  // Mise à jour des refs à chaque render — sans re-enregistrer l'écouteur
-  useEffect(() => { saveRef.current = onSave; });
-  useEffect(() => { prevRef.current = onPrevious; });
-  useEffect(() => { nextRef.current = onNext; });
-
   useEffect(() => {
     if (!enabled) return;
 
     const handleKeyDown = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement;
-      const tag = target.tagName;
 
-      const isEditable =
-        tag === "INPUT" ||
-        tag === "TEXTAREA" ||
-        tag === "SELECT" ||
-        target.isContentEditable;
-
-      if (!isEditable) {
-        if (event.key === "ArrowLeft") {
-          event.preventDefault();
-          prevRef.current();
-        }
-        if (event.key === "ArrowRight") {
-          event.preventDefault();
-          nextRef.current();
-        }
-        if (event.key === "Enter") {
-          event.preventDefault();
-          saveRef.current();
-        }
+      if (target.tagName === "INPUT" || target.tagName === "TEXTAREA") {
+        return;
       }
 
-      if (event.ctrlKey && event.key === "s") {
+      const key = event.key.toUpperCase();
+
+      if (event.key === "ArrowLeft") {
         event.preventDefault();
-        saveRef.current();
+        onPrevious();
+        return;
+      }
+
+      if (event.key === "ArrowRight") {
+        event.preventDefault();
+        onNext();
+        return;
+      }
+
+      // réponses A → I ou 1 → 9
+    const azertyMap: Record<string, string> = {
+      A: "A",
+      Z: "B",
+      E: "C",
+      R: "D",
+      T: "E",
+      Y: "F",
+      U: "G",
+      I: "H",
+      O: "I",
+    };
+const numbers = ["1","2","3","4","5","6","7","8","9"];
+
+      // AZERTY
+      if (azertyMap[key]) {
+        event.preventDefault();
+        onSelectAnswer(azertyMap[key]);
+        return;
+      }
+
+      // chiffres
+      if (numbers.includes(key)) {
+        event.preventDefault();
+
+        const index = parseInt(key) - 1;
+        const letter = String.fromCharCode(65 + index); // A=65
+
+        onSelectAnswer(letter);
+        return;
+      }
+
+      // sauvegarde
+      if (event.key === "Enter") {
+        event.preventDefault();
+        onSave();
+        return;
+      }
+
+      // copier
+      if (event.ctrlKey) {
+        event.preventDefault();
+        onCopy();
+        return;
       }
     };
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-    // L'écouteur est enregistré une seule fois — les refs gardent les valeurs fraîches
-  }, [enabled]);
+  }, [onPrevious, onNext, onSelectAnswer, onSave, onCopy, enabled]);
 };
+
 
 export default function SeriesEditPage() {
   const { seriesId } = useParams<{ seriesId: string }>();
@@ -133,6 +178,9 @@ export default function SeriesEditPage() {
 
   const currentQ = displayedQuestions.find(q => q.id === currentId) ?? displayedQuestions[0] ?? null;
   const currentIndex = currentQ ? displayedQuestions.findIndex(q => q.id === currentQ.id) : 0;
+
+  const [objectives, setObjectives] = useState<ObjectiveOption[]>([]);
+  const [loadingObjectives, setLoadingObjectives] = useState(false);
 
   // ── Calcul de la numérotation du cas clinique ──────────────────────────────
   const getCaseNumbering = (
@@ -226,6 +274,27 @@ export default function SeriesEditPage() {
     })();
   }, [seriesId]);
 
+  useEffect(() => {
+  const fetchObjectives = async () => {
+    setLoadingObjectives(true);
+
+    const { data, error } = await supabase
+      .from("courses")
+      .select("id, name, specialty, level, bank_size")
+      .order("name", { ascending: true });
+
+    if (error) {
+      console.error("Erreur chargement objectifs:", error);
+    } else if (data) {
+      setObjectives(data);
+    }
+
+    setLoadingObjectives(false);
+  };
+
+  fetchObjectives();
+}, []);
+
   // ── Mise à jour d'une question dans le state ─────────────────────────────
   const updateCurrentQuestion = (updates: Partial<EditableQuestion>) => {
     if (!currentId) return;
@@ -238,18 +307,21 @@ export default function SeriesEditPage() {
     );
     setHasUnsavedChanges(true);
   };
+  
+  // ── Navigation — NE supprime PAS les modifications, change juste de question
+  const goTo = (id: string) => setCurrentId(id);
+  const goPrev = () => {
+    if (currentIndex > 0) goTo(displayedQuestions[currentIndex - 1].id);
+  };
+  const goNext = () => {
+    if (currentIndex < displayedQuestions.length - 1) goTo(displayedQuestions[currentIndex + 1].id);
+  };
 
-const goTo = (id: string) => setCurrentId(id);
-const goPrev = () => {
-  if (currentIndex > 0) goTo(displayedQuestions[currentIndex - 1].id);
-};
-const goNext = () => {
-  if (currentIndex < displayedQuestions.length - 1) goTo(displayedQuestions[currentIndex + 1].id);
-};
-const handleSaveRef = useRef<() => void>(() => {});
-useKeyboardNavigation(goPrev, goNext, () => handleSaveRef.current());
+  // Activer la navigation au clavier
+  
 
 
+  // ── Options ───────────────────────────────────────────────────────────────
   const updateOption = (index: number, value: string) => {
     if (!currentQ) return;
     const newOptions = [...currentQ.options];
@@ -283,6 +355,16 @@ useKeyboardNavigation(goPrev, goNext, () => handleSaveRef.current());
     });
   };
 
+  const selectAnswerByLetter = (letter: string) => {
+  if (!currentQ) return;
+
+  const index = letter.charCodeAt(0) - 65;
+
+  if (!currentQ.options[index]) return;
+
+  toggleCorrectAnswer(letter);
+};
+
   const toggleTag = (tag: string) => {
     if (!currentQ) return;
     const current = currentQ.tags || [];
@@ -292,6 +374,34 @@ useKeyboardNavigation(goPrev, goNext, () => handleSaveRef.current());
         : [...current, tag],
     });
   };
+
+  const updateSubCourse = (subCourse: string | null) => {
+  if (!currentQ) return;
+
+  // si la question appartient à un cas clinique
+  if (currentQ.clinicalCaseId) {
+
+    setQuestions(prev =>
+      prev.map(q =>
+        q.clinicalCaseId === currentQ.clinicalCaseId
+          ? {
+              ...q,
+              subCourse: subCourse,
+              updatedAt: new Date().toISOString()
+            }
+          : q
+      )
+    );
+
+  } else {
+
+    // question simple
+    updateCurrentQuestion({ subCourse });
+
+  }
+
+  setHasUnsavedChanges(true);
+};
 
   // ── Image ─────────────────────────────────────────────────────────────────
   const handleImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -317,45 +427,61 @@ useKeyboardNavigation(goPrev, goNext, () => handleSaveRef.current());
   };
 
   // ── Ajouter / Supprimer une question ──────────────────────────────────────
-  const addQuestion = () => {
-    const newQ: EditableQuestion = {
-      id:             `new_${Date.now()}`,
-      series_id:      seriesId!,
-      question:       "",
-      options:        ["", "", "", ""],
-      correctAnswers: [],
-      tags:           [],
-      type:           "QCM",
-      subCourse:      null,
-      aiJustification: "",
-      imageUrl:       null,
-      createdAt:      new Date().toISOString(),
-      updatedAt:      new Date().toISOString(),
-      _isNew:         true,
-      _deleted:       false,
-      _imageFile:     null,
-      _imagePreview:  null,
-    };
-    setQuestions(prev => [...prev, newQ]);
-    setCurrentId(newQ.id);
+const addQuestion = () => {
+  const newQ: EditableQuestion = {
+    id: `new_${Date.now()}`,
+    series_id: seriesId!,
+    question: "",
+    options: ["", "", "", ""],
+    correctAnswers: [],
+    tags: [],
+    type: "QCM",
+    subCourse: null,
+    aiJustification: "",
+    imageUrl: null,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    _isNew: true,
+    _deleted: false,
+    _imageFile: null,
+    _imagePreview: null,
   };
 
-  const deleteCurrentQuestion = () => {
-    if (!currentQ) return;
-    if (!window.confirm("Supprimer cette question ?")) return;
+  setQuestions(prev => [...prev, newQ]);
 
-    const remainingActive = displayedQuestions.filter(q => q.id !== currentQ.id);
-    const nextQ = remainingActive[Math.max(0, currentIndex - 1)] ?? remainingActive[0] ?? null;
+  setCurrentId(newQ.id);
 
-    if (currentQ._isNew) {
-      setQuestions(prev => prev.filter(q => q.id !== currentQ.id));
+  setHasUnsavedChanges(true);   // ✅ IMPORTANT
+};
+
+
+const deleteCurrentQuestion = () => {
+  if (!currentQ) return;
+
+  if (!window.confirm("Supprimer cette question ?")) return;
+
+  setQuestions(prev => {
+    const updated = prev.map(q =>
+      q.id === currentQ.id
+        ? { ...q, _deleted: true }
+        : q
+    );
+
+    const active = updated.filter(q => !q._deleted);
+
+    if (active.length === 0) {
+      setCurrentId(null);
     } else {
-      setQuestions(prev =>
-        prev.map(q => q.id === currentQ.id ? { ...q, _deleted: true } : q)
-      );
+      const nextIndex = Math.max(0, currentIndex - 1);
+      setCurrentId(active[nextIndex].id);
     }
-    setCurrentId(nextQ?.id ?? null);
-  };
+
+    return updated;
+  });
+
+  setHasUnsavedChanges(true);
+};
+
 
   // ── Sous-cours ────────────────────────────────────────────────────────────
   const handleAddSubCourse = async () => {
@@ -494,7 +620,7 @@ useKeyboardNavigation(goPrev, goNext, () => handleSaveRef.current());
       }
 
       toast.success("✅ Série sauvegardée avec succès");
-      navigate(`/series/${seriesId}`);
+     // navigate(`/series/${seriesId}`);
     } catch (err) {
       console.error(err);
       toast.error("Erreur lors de la sauvegarde");
@@ -503,9 +629,13 @@ useKeyboardNavigation(goPrev, goNext, () => handleSaveRef.current());
       setUploadingImage(false);
     }
   };
-  useEffect(() => {
-    handleSaveRef.current = handleSave;
-  });
+useKeyboardNavigation(
+  goPrev,
+  goNext,
+  selectAnswerByLetter,
+  handleSave,
+  handleCopyQuestion
+);
   // ── États de chargement / vide ────────────────────────────────────────────
   if (loading) {
     return (
@@ -578,22 +708,80 @@ useKeyboardNavigation(goPrev, goNext, () => handleSaveRef.current());
             </div>
 
             {showMetaEditor && (
-              <div className="mt-4 pt-4 border-t border-gray-100 grid grid-cols-1 md:grid-cols-3 gap-3">
-                {(["faculty", "objective", "year"] as const).map(field => (
-                  <div key={field}>
-                    <label className="block text-xs font-medium text-gray-500 mb-1">
-                      {field === "faculty" ? "Faculté" : field === "objective" ? "Objectif" : "Année"}
-                    </label>
-                    <input
-                      type="text"
-                      value={meta[field]}
-                      onChange={e => setMeta(prev => ({ ...prev, [field]: e.target.value }))}
-                      className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
-                    />
-                  </div>
-                ))}
-              </div>
-            )}
+  <div className="mt-4 pt-4 border-t border-gray-100 grid grid-cols-1 md:grid-cols-3 gap-3">
+
+    {/* Faculté */}
+    <div>
+      <label className="block text-xs font-medium text-gray-500 mb-1">
+        Faculté
+      </label>
+      <select
+        value={meta.faculty}
+        onChange={(e) =>
+          setMeta((prev) => ({ ...prev, faculty: e.target.value }))
+        }
+        className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg bg-white focus:ring-2 focus:ring-indigo-500"
+      >
+        <option value="">Sélectionner...</option>
+        {FACULTIES.map((fac) => (
+          <option key={fac} value={fac}>
+            {fac}
+          </option>
+        ))}
+      </select>
+    </div>
+
+    {/* Objectif */}
+    <div>
+      <label className="block text-xs font-medium text-gray-500 mb-1">
+        Objectif
+      </label>
+
+      <select
+        value={meta.objective}
+        onChange={(e) =>
+          setMeta((prev) => ({ ...prev, objective: e.target.value }))
+        }
+        disabled={loadingObjectives}
+        className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg bg-white focus:ring-2 focus:ring-indigo-500"
+      >
+        <option value="">
+          {loadingObjectives ? "Chargement..." : "Sélectionner un cours"}
+        </option>
+
+        {objectives.map((obj) => (
+          <option key={obj.id} value={obj.name}>
+            {obj.name}
+            {obj.specialty ? ` — ${obj.specialty}` : ""}
+          </option>
+        ))}
+      </select>
+    </div>
+
+    {/* Année */}
+    <div>
+      <label className="block text-xs font-medium text-gray-500 mb-1">
+        Année
+      </label>
+
+      <select
+        value={meta.year}
+        onChange={(e) =>
+          setMeta((prev) => ({ ...prev, year: e.target.value }))
+        }
+        className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg bg-white focus:ring-2 focus:ring-indigo-500"
+      >
+        <option value="">Sélectionner...</option>
+        {YEARS.map((yr) => (
+          <option key={yr} value={yr}>
+            {yr}
+          </option>
+        ))}
+      </select>
+    </div>
+
+  </div>
+)}
           </div>
         </div>
 
@@ -844,7 +1032,7 @@ useKeyboardNavigation(goPrev, goNext, () => handleSaveRef.current());
             <div className="flex gap-2">
               <select
                 value={currentQ.subCourse || ""}
-                onChange={e => updateCurrentQuestion({ subCourse: e.target.value || null })}
+                onChange={e => updateSubCourse(e.target.value || null)}
                 disabled={!courseId}
                 className="flex-1 p-3 border border-gray-300 rounded-lg bg-white focus:ring-2 focus:ring-indigo-500 disabled:bg-gray-50 disabled:text-gray-400"
               >

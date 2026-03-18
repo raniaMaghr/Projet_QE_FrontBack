@@ -28,6 +28,16 @@ export interface SupabaseQuestion {
   updated_at: string;
 }
 
+export interface Course {
+  id: string;
+  name: string;
+  specialty: string;
+  level: "J1" | "J2";
+  bank_size: number;
+  created_at?: string;
+  updated_at?: string;
+}
+
 export interface QuestionWithSeries extends SupabaseQuestion {
   series?: SupabaseSeries;
 }
@@ -491,4 +501,18 @@ export async function loadSeriesFromSupabase(seriesId: string): Promise<{
     console.error("❌ Erreur lors du chargement:", error);
     throw error;
   }
+}
+
+export async function getCourses(): Promise<Course[]> {
+  const { data, error } = await supabase
+    .from("courses")
+    .select("*")
+    .order("specialty", { ascending: true });
+
+  if (error) {
+    console.error("Erreur récupération courses:", error);
+    throw error;
+  }
+
+  return data || [];
 }
