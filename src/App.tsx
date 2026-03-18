@@ -26,12 +26,14 @@ import { Toaster } from './components/ui/sonner';
 import { RoleProtectedRoute } from "./contexts/RoleProtectedRoute";
 import SeriesManagementPage from './components/SeriesManagement';
 import SeriesEditPage from './pages/SeriesEditPage';
-
 import { SeriesListPage } from "@/pages/SeriesListPage";
 import QCMSeriesPage from "@/pages/QCMSeriesPage";
 
+// ✅ Import du StudentDashboard
+import { StudentDashboard } from './pages/Studentdashboard';
 
 const RoleManager = lazy(() => import('./pages/SuperAdmin/RoleManager'));
+
 // ─────────────────────────────────────────────
 // Routes protégées
 // ─────────────────────────────────────────────
@@ -39,8 +41,6 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { isAuthenticated, loading } = useAuth();
   const [showSpinner, setShowSpinner] = useState(true);
 
-  // GARDE-FOU : Si le chargement prend plus de 5 secondes, on arrête d'afficher le spinner
-  // pour éviter le blocage infini, et on laisse la logique de redirection prendre le relais.
   useEffect(() => {
     const timer = setTimeout(() => {
       if (loading) {
@@ -59,10 +59,6 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
     );
   }
 
-  /*if (!isAuthenticated) {
-    return <Navigate to="/login" replace />;
-  }*/
-
   return <>{children}</>;
 }
 
@@ -75,15 +71,14 @@ function PublicRoute({ children }: { children: React.ReactNode }) {
   if (loading) return null;
 
   if (isAuthenticated && user) {
-    console.log(user.role)
+    console.log(user.role);
     switch (user.role) {
       case 'admin':
         return <Navigate to="/tutorials" replace />;
-
       case 'superAdmin':
         return <Navigate to="/superadmin" replace />;
-
       case 'student':
+        return <Navigate to="/student-dashboard" replace />;
       default:
         return <Navigate to="/dashboard" replace />;
     }
@@ -95,37 +90,39 @@ function PublicRoute({ children }: { children: React.ReactNode }) {
 function AppRoutes() {
   return (
     <Routes>
+      {/* ── Routes publiques ── */}
       <Route path="/" element={<PublicRoute><HomePage /></PublicRoute>} />
       <Route path="/login" element={<PublicRoute><LoginPage /></PublicRoute>} />
       <Route path="/register" element={<PublicRoute><RegisterPage /></PublicRoute>} />
 
+      {/* ── Routes protégées avec MainLayout ── */}
       <Route element={<ProtectedRoute><MainLayout /></ProtectedRoute>}>
+        {/* ✅ /student-dashboard dans le même groupe que /dashboard */}
+        <Route path="/student-dashboard" element={<StudentDashboard />} />
         <Route path="/dashboard" element={<DashboardPage />} />
-        {/*<Route path="/stats" element={<StatsPageWrapper />} />*/}
         <Route path="/qcm" element={<QCMPageWrapper />} />
-        <Route path="/learn/courses"  element={<div className="p-8 text-center">Cours Communs — En développement</div>} />
+        <Route path="/learn/courses"   element={<div className="p-8 text-center">Cours Communs — En développement</div>} />
         <Route path="/learn/summaries" element={<div className="p-8 text-center">Résumés — En développement</div>} />
         <Route path="/planning"        element={<div className="p-8 text-center">Planning — En développement</div>} />
         <Route path="/train/series"    element={<SeriesPage />} />
         <Route path="/train/custom"    element={<CustomQCMPage />} />
         <Route path="/exam"            element={<div className="p-8 text-center">Examens Blancs — En développement</div>} />
         <Route path="/blog"            element={<div className="p-8 text-center">Blog — En développement</div>} />
-        {/*<Route path="/tutorials"       element={<div className="p-8 text-center">Tutoriels — En développement</div>} />*/}
         <Route path="/profile"         element={<div className="p-8 text-center">Profil — En développement</div>} />
         <Route path="/settings"        element={<div className="p-8 text-center">Paramètres — En développement</div>} />
         <Route path="/series/:speciality/:course/:year" element={<SeriesListPage />} />
-        <Route path="/qcm/series/:seriesId"element={<QCMSeriesPage />} />
-        <Route path="/qcm/series/:seriesId"             element={<QCMSeriesPage />} />
-      
+        <Route path="/qcm/series/:seriesId" element={<QCMSeriesPage />} />
       </Route>
 
-      {/* Admin only */}
-      
+      {/* ── Admin / SuperAdmin only ── */}
       <Route
-        element={<RoleProtectedRoute allowedRoles={["admin", "superAdmin"]}><MainLayout /></RoleProtectedRoute>}
-      > 
+        element={
+          <RoleProtectedRoute allowedRoles={["admin", "superAdmin"]}>
+            <MainLayout />
+          </RoleProtectedRoute>
+        }
+      >
         <Route path="/superadmin" element={<SuperAdminDashboard />} />
-        {/* Ajout de la route RoleManager (lazy loading) */}
         <Route path="/superadmin/roles" element={
           <Suspense fallback={<div>Chargement...</div>}>
             <div className="p-8"><RoleManager /></div>
@@ -135,21 +132,21 @@ function AppRoutes() {
         <Route path="/tools/duplicates" element={<GlobalDuplicateDetectionPage />} />
         <Route path="/stats" element={<StatsPageWrapper />} />
         <Route
-  path="/insert-question"
-  element={
-    <UploadPage
-      onSeriesUploaded={(data) => {
-        console.log("Série reçue :", data);
-      }}
-    />
-  }
-/>
+          path="/insert-question"
+          element={
+            <UploadPage
+              onSeriesUploaded={(data) => {
+                console.log("Série reçue :", data);
+              }}
+            />
+          }
+        />
         <Route path="/series/list" element={<SeriesManagementPage />} />
         <Route path="/series/:seriesId" element={<SeriesPageWrapper />} />
         <Route path="/question/:questionId" element={<QuestionDetailPage />} />
-      
-      <Route path="/series/:seriesId/edit" element={<SeriesEditPage />} />
+        <Route path="/series/:seriesId/edit" element={<SeriesEditPage />} />
       </Route>
+
       <Route path="*" element={<Navigate to="/login" replace />} />
     </Routes>
   );

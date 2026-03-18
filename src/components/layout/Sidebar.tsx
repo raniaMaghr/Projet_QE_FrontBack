@@ -45,7 +45,13 @@ const navItems: NavItem[] = [
     label: 'Accueil',
     icon: Home,
     path: '/dashboard',
-    roles: ['student', 'admin', 'superAdmin'],
+    roles: ['admin', 'superAdmin'],  
+  },
+  {
+    label: 'Accueil',
+    icon: Home,
+    path: '/student-dashboard',
+    roles: ['student'],              
   },
   {
     label: 'Apprendre',

@@ -159,19 +159,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         if (error) console.error('Erreur getSession:', error);
         if (initialSession) {
           setSession(initialSession);
-          // On lance le chargement du profil mais on ne bloque pas forcément le spinner ici
-          // si on veut une réactivité maximale. Cependant, pour la cohérence des données,
-          // on attend le premier essai de loadProfile.
           await loadProfile(initialSession.user);
         }
         if (session?.user) {
-          // ✅ Session Supabase existante MAIS on vérifie si login fait dans cette session navigateur
           const sessionActive = sessionStorage.getItem(SESSION_FLAG);
           if (sessionActive) {
-            // Refresh normal → rester connecté
             loadProfile(session.user);
           } else {
-            // Nouvel onglet ou nouvelle session navigateur → forcer login
             setUser(null);
             setLoading(false);
           }
@@ -190,25 +184,31 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const { data: { subscription } } = supabases.auth.onAuthStateChange(
         (event, currentSession) => {
           if (!mountedRef.current) return;
-          setSession(currentSession);
-          if (currentSession?.user) {
-          if (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED') {
-            loadProfile(currentSession.user);
+
+          // ✅ SIGNED_OUT : vider session + user immédiatement et sortir
+          if (event === 'SIGNED_OUT') {
+            setSession(null);
+            setUser(null);
+            setLoading(false);
+            sessionStorage.removeItem(SESSION_FLAG);
+            return;
           }
-        } else {
-          setUser(null);
-        }
+
+          setSession(currentSession);
+
+          if (currentSession?.user) {
+            if (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED') {
+              loadProfile(currentSession.user);
+            }
+          } else {
+            setUser(null);
+          }
+
           if (event === 'SIGNED_IN' && session?.user) {
             if (isManualLoginRef.current) {
               loadProfile(session.user);
               isManualLoginRef.current = false;
             }
-          }
-
-          if (event === 'SIGNED_OUT') {
-            sessionStorage.removeItem(SESSION_FLAG);
-            setUser(null);
-            setLoading(false);
           }
         }
       );
@@ -287,11 +287,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const logout = async () => {
     try {
       setLoading(true);
-      await supabase.auth.signOut();
+      // ✅ Vider user et session AVANT signOut pour que isAuthenticated
+      // passe à false immédiatement et éviter la redirection par PublicRoute
       setUser(null);
-    //  setSession(null);
+      setSession(null);
+      await supabase.auth.signOut();
     } catch (error) {
       setUser(null);
+      setSession(null);
     } finally {
       setLoading(false);
     }
@@ -317,8 +320,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   return (
     <AuthContext.Provider value={{
       user,
-      // On est authentifié si on a une session active, même si le profil charge encore
-      isAuthenticated: !!session || !!user,
+      // ✅ isAuthenticated basé sur session ET user pour éviter
+      // qu'une session résiduelle maintienne l'état connecté après logout
+      isAuthenticated: !!session && !!user,
       loading,
       login,
       register,
