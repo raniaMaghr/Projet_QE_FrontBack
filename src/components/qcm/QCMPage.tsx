@@ -192,20 +192,81 @@ export default function QCMPage({
         setLoading(false);
       });
   }, [seriesId]);
-
-  // ── Timer
-  useEffect(() => {
-    if (loading) return;
-    const interval = setInterval(() => setTimer((t) => t + 1), 1000);
-    return () => clearInterval(interval);
-  }, [loading]);
-
+  
   // ── Derived
   const currentQuestion = questions[currentIndex];
   const currentCas = currentQuestion ? casCliniquesMap.get(currentQuestion.casCliniqueId) : undefined;
   const currentAnswer = currentQuestion ? userAnswers.get(currentQuestion.id) : undefined;
   const progressPercent = questions.length ? ((currentIndex + 1) / questions.length) * 100 : 0;
   const correctCount = Array.from(userAnswers.values()).filter((a) => a.isCorrect).length;
+    // ── Timer
+  const [isFinished, setIsFinished] = useState(false);
+  const [questionTimers, setQuestionTimers] = useState<Map<string, number>>(new Map());
+  const currentQuestionTime = currentQuestion ? questionTimers.get(currentQuestion.id) ?? 0 : 0;
+
+  useEffect(() => {
+    if (loading || isFinished) return;
+
+    const interval = setInterval(() => {
+      setTimer((t) => t + 1);
+
+      if (currentQuestion) {
+        setQuestionTimers((prev) => {
+          const newMap = new Map(prev);
+          const prevTime = newMap.get(currentQuestion.id) ?? 0;
+          newMap.set(currentQuestion.id, prevTime + 1);
+          return newMap;
+        });
+      }
+    }, 1000);
+
+    return () => clearInterval(interval);
+  }, [loading, isFinished, currentQuestion]);
+
+    async function saveTimer() {
+    try {
+      const {
+        data: { user },
+        error: userError,
+      } = await supabase.auth.getUser();
+
+      if (userError || !user) {
+        console.error("User not logged in or auth error:", userError);
+        return;
+      }
+
+      // Prepare per-question time array
+      const perQuestionTime = Array.from(questionTimers.entries()).map(
+        ([questionId, time]) => ({
+          question_id: questionId,
+          time_spent: time,
+        }),
+      );
+
+      const sessionData = {
+        user_id: user.id,
+        series_id: seriesId,
+        total_time: timer,
+        score: correctCount,
+        questions_time: perQuestionTime,
+      };
+
+      console.log("DATA TO INSERT", sessionData);
+
+      const { data, error } = await supabase
+        .from("qcm_timer")
+        .insert(sessionData)
+        .select();
+
+      if (error) {
+        console.error("SESSION ERROR", error);
+      } else {
+        console.log("SESSION INSERTED", data);
+      }
+    } catch (err) {
+      console.error("Unexpected error saving session:", err);
+    }
+  }
 
   const formatTime = (s: number) =>
     `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
@@ -400,12 +461,17 @@ export default function QCMPage({
                 <Clock size={16} className="text-muted-foreground" />
                 <span>{formatTime(timer)}</span>
               </div>
-              <Progress value={progressPercent} className="w-32" />
             </div>
-
-            <Button variant="outline" size="sm" onClick={() => setShowResults(true)}>
-              Terminer
-            </Button>
+            <Button
+            variant="outline"
+            size="sm"
+            onClick={() => {
+              setIsFinished(true);   
+              setShowResults(true);  
+            }}
+          >
+            Terminer
+          </Button>
           </div>
 
           {/* Mobile Progress */}
@@ -510,7 +576,13 @@ export default function QCMPage({
                         </Badge>
                       )}
                     </CardTitle>
-                    <Button
+                    <div className="flex items-center gap-3">
+                  {/* Timer question */}
+                  <div className="flex items-center gap-1 text-sm text-muted-foreground">
+                    <Target size={16} className="text-muted-foreground" />
+                    <span>{formatTime(currentQuestionTime)}</span>
+                  </div>
+                     <Button
                       variant={currentAnswer?.isMarked ? "default" : "outline"}
                       size="sm"
                       onClick={handleToggleMark}
@@ -518,6 +590,8 @@ export default function QCMPage({
                       <Flag size={16} className="mr-1" />
                       {currentAnswer?.isMarked ? "Marquée" : "Marquer"}
                     </Button>
+                  </div>
+                 
                   </div>
                 </CardHeader>
 
@@ -852,10 +926,20 @@ export default function QCMPage({
             </p>
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setShowResults(false)}>
+            <Button variant="outline"   onClick={() => {
+            setShowResults(false);
+            setIsFinished(false);
+          }}>
               Continuer
             </Button>
-            <Button onClick={handleExit}>Terminer</Button>
+           <Button
+              onClick={async () => {
+                handleExit();      
+                await saveTimer(); 
+              }}
+            >
+              Terminer
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
