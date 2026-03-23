@@ -153,7 +153,7 @@ export default function QCMPage({
   const [timer, setTimer] = useState(0);
   const [highlights, setHighlights] = useState<Highlight[]>([]);
   const [highlightMode, setHighlightMode] = useState(false);
-
+const [saving, setSaving] = useState(false);
   // ── Fetch questions + cas cliniques from Supabase
   useEffect(() => {
     if (!seriesId) return;
@@ -265,6 +265,70 @@ export default function QCMPage({
       }
     } catch (err) {
       console.error("Unexpected error saving session:", err);
+    }
+  }
+
+
+  async function saveResultTestQCM() {
+    console.log("SAVE RESULTS TRIGGERED");
+    try {
+      const {
+        data: { user },
+        error: userError,
+      } = await supabase.auth.getUser();
+
+      if (userError || !user) {
+        console.error("User not logged in");
+        return;
+      }
+
+      const incorrectCount = Array.from(userAnswers.values()).filter(
+        (a) => a.isValidated && !a.isCorrect,
+      ).length;
+
+      const answeredCount = Array.from(userAnswers.values()).filter(
+        (a) => a.isValidated,
+      ).length;
+
+      const notAnsweredCount = questions.length - answeredCount;
+
+      //  answers détaillées
+      const answers = questions.map((q) => {
+        const userAns = userAnswers.get(q.id);
+
+        return {
+          question_id: q.id,
+          selected: userAns?.selected ?? [],
+          is_correct: userAns?.isCorrect ?? false,
+          is_validated: userAns?.isValidated ?? false,
+        };
+      });
+
+      const resultData = {
+        user_id: user.id,
+        series_id: seriesId,
+
+        correct_answers: correctCount,
+        incorrect_answers: incorrectCount,
+        not_answered: notAnsweredCount,
+
+        total_questions: questions.length,
+        score: correctCount,
+
+        total_time: timer,
+
+        answers: answers,
+      };
+
+      const { error } = await supabase.from("qcm_results").insert(resultData);
+
+      if (error) {
+        console.error("RESULT ERROR", error);
+      } else {
+        console.log("RESULT SAVED");
+      }
+    } catch (err) {
+      console.error("Unexpected error:", err);
     }
   }
 
@@ -429,13 +493,17 @@ export default function QCMPage({
   // ─── Render ──────────────────────────────────────────────────────────────────
   return (
     <div className="min-h-screen bg-background qcm-professional">
-
       {/* ── Header ── */}
       <header className="sticky top-0 z-50 w-full border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
         <div className="container mx-auto px-4 py-3">
           <div className="flex items-center justify-between gap-4">
             <div className="flex items-center gap-3">
-              <Button variant="ghost" size="icon" onClick={handleExit} title="Retour">
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={handleExit}
+                title="Retour"
+              >
                 <ChevronLeft size={20} />
               </Button>
               <Button
@@ -463,15 +531,15 @@ export default function QCMPage({
               </div>
             </div>
             <Button
-            variant="outline"
-            size="sm"
-            onClick={() => {
-              setIsFinished(true);   
-              setShowResults(true);  
-            }}
-          >
-            Terminer
-          </Button>
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                setIsFinished(true);
+                setShowResults(true);
+              }}
+            >
+              Terminer
+            </Button>
           </div>
 
           {/* Mobile Progress */}
@@ -492,7 +560,9 @@ export default function QCMPage({
               className="gap-2"
             >
               <Highlighter size={16} />
-              {highlightMode ? "Mode surlignage activé" : "Activer le surlignage"}
+              {highlightMode
+                ? "Mode surlignage activé"
+                : "Activer le surlignage"}
             </Button>
             {highlights.length > 0 && (
               <Button
@@ -506,7 +576,8 @@ export default function QCMPage({
             )}
             {highlightMode && (
               <span className="text-xs text-muted-foreground ml-2">
-                Sélectionnez du texte pour le surligner · Cliquez sur un surlignage pour le retirer
+                Sélectionnez du texte pour le surligner · Cliquez sur un
+                surlignage pour le retirer
               </span>
             )}
           </div>
@@ -516,10 +587,8 @@ export default function QCMPage({
       {/* ── Main layout ── */}
       <div className="container mx-auto px-4 py-6">
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-
           {/* ── Left column ── */}
           <div className="lg:col-span-8 space-y-6">
-
             {/* Cas Clinique card */}
             {currentCas && currentCas.contenu && (
               <motion.div
@@ -547,7 +616,10 @@ export default function QCMPage({
                       data-highlight-id={currentCas.id}
                     >
                       {currentCas.contenu.split("\n").map((line, index) => (
-                        <p key={index} className="whitespace-pre-wrap leading-relaxed">
+                        <p
+                          key={index}
+                          className="whitespace-pre-wrap leading-relaxed"
+                        >
                           {highlightBiologicalValues(line)}
                         </p>
                       ))}
@@ -577,21 +649,22 @@ export default function QCMPage({
                       )}
                     </CardTitle>
                     <div className="flex items-center gap-3">
-                  {/* Timer question */}
-                  <div className="flex items-center gap-1 text-sm text-muted-foreground">
-                    <Target size={16} className="text-muted-foreground" />
-                    <span>{formatTime(currentQuestionTime)}</span>
-                  </div>
-                     <Button
-                      variant={currentAnswer?.isMarked ? "default" : "outline"}
-                      size="sm"
-                      onClick={handleToggleMark}
-                    >
-                      <Flag size={16} className="mr-1" />
-                      {currentAnswer?.isMarked ? "Marquée" : "Marquer"}
-                    </Button>
-                  </div>
-                 
+                      {/* Timer question */}
+                      <div className="flex items-center gap-1 text-sm text-muted-foreground">
+                        <Target size={16} className="text-muted-foreground" />
+                        <span>{formatTime(currentQuestionTime)}</span>
+                      </div>
+                      <Button
+                        variant={
+                          currentAnswer?.isMarked ? "default" : "outline"
+                        }
+                        size="sm"
+                        onClick={handleToggleMark}
+                      >
+                        <Flag size={16} className="mr-1" />
+                        {currentAnswer?.isMarked ? "Marquée" : "Marquer"}
+                      </Button>
+                    </div>
                   </div>
                 </CardHeader>
 
@@ -603,7 +676,11 @@ export default function QCMPage({
                     data-highlight-type="question"
                     data-highlight-id={currentQuestion.id}
                   >
-                    {renderWithHighlights(currentQuestion.enonce, "question", currentQuestion.id)}
+                    {renderWithHighlights(
+                      currentQuestion.enonce,
+                      "question",
+                      currentQuestion.id,
+                    )}
                   </div>
 
                   {/* Image (si présente) */}
@@ -618,18 +695,29 @@ export default function QCMPage({
                   {/* Options */}
                   <div className="space-y-3">
                     {currentQuestion.options.map((option) => {
-                      const isSelected = currentAnswer?.selected.includes(option.letter) ?? false;
+                      const isSelected =
+                        currentAnswer?.selected.includes(option.letter) ??
+                        false;
                       const isValidated = currentAnswer?.isValidated ?? false;
-                      const isCorrect = currentQuestion.reponseCorrecte.includes(option.letter);
-                      const showFeedback = isValidated && (mode === "entrainement" || mode === "serie");
+                      const isCorrect =
+                        currentQuestion.reponseCorrecte.includes(option.letter);
+                      const showFeedback =
+                        isValidated &&
+                        (mode === "entrainement" || mode === "serie");
 
                       return (
-                        <motion.div key={option.letter} whileHover={{ scale: 1.01 }} whileTap={{ scale: 0.99 }}>
+                        <motion.div
+                          key={option.letter}
+                          whileHover={{ scale: 1.01 }}
+                          whileTap={{ scale: 0.99 }}
+                        >
                           <div
                             onClick={() => handleSelectOption(option.letter)}
                             className={[
                               "relative p-4 rounded-lg border-2 transition-all",
-                              isValidated ? "cursor-not-allowed" : "cursor-pointer",
+                              isValidated
+                                ? "cursor-not-allowed"
+                                : "cursor-pointer",
                               isSelected && !showFeedback
                                 ? "border-primary bg-primary/5"
                                 : "border-border hover:border-primary/50",
@@ -670,16 +758,22 @@ export default function QCMPage({
                                 {renderWithHighlights(
                                   option.text,
                                   "option",
-                                  `${currentQuestion.id}-${option.letter}`
+                                  `${currentQuestion.id}-${option.letter}`,
                                 )}
                               </span>
 
                               {/* Feedback icons */}
                               {showFeedback && isCorrect && (
-                                <CheckCircle className="text-success flex-shrink-0" size={20} />
+                                <CheckCircle
+                                  className="text-success flex-shrink-0"
+                                  size={20}
+                                />
                               )}
                               {showFeedback && !isCorrect && isSelected && (
-                                <XCircle className="text-destructive flex-shrink-0" size={20} />
+                                <XCircle
+                                  className="text-destructive flex-shrink-0"
+                                  size={20}
+                                />
                               )}
                             </div>
                           </div>
@@ -707,20 +801,38 @@ export default function QCMPage({
                         >
                           <div className="flex items-start gap-2 mb-2">
                             {currentAnswer.isCorrect ? (
-                              <CheckCircle className="text-success flex-shrink-0" size={20} />
+                              <CheckCircle
+                                className="text-success flex-shrink-0"
+                                size={20}
+                              />
                             ) : (
-                              <XCircle className="text-destructive flex-shrink-0" size={20} />
+                              <XCircle
+                                className="text-destructive flex-shrink-0"
+                                size={20}
+                              />
                             )}
                             <h4 className="font-semibold">
-                              {currentAnswer.isCorrect ? "Bonne réponse !" : "Réponse incorrecte"}
+                              {currentAnswer.isCorrect
+                                ? "Bonne réponse !"
+                                : "Réponse incorrecte"}
                             </h4>
                           </div>
 
                           {/* Correct answer(s) hint */}
                           {!currentAnswer.isCorrect && (
                             <p className="text-sm text-muted-foreground mb-3 ml-7">
-                              Réponse{currentQuestion.reponseCorrecte.length > 1 ? "s" : ""} correcte{currentQuestion.reponseCorrecte.length > 1 ? "s" : ""} :{" "}
-                              <strong>{currentQuestion.reponseCorrecte.join(", ")}</strong>
+                              Réponse
+                              {currentQuestion.reponseCorrecte.length > 1
+                                ? "s"
+                                : ""}{" "}
+                              correcte
+                              {currentQuestion.reponseCorrecte.length > 1
+                                ? "s"
+                                : ""}{" "}
+                              :{" "}
+                              <strong>
+                                {currentQuestion.reponseCorrecte.join(", ")}
+                              </strong>
                             </p>
                           )}
 
@@ -732,16 +844,20 @@ export default function QCMPage({
                               data-highlight-type="question"
                               data-highlight-id={`${currentQuestion.id}-explication`}
                             >
-                              {currentQuestion.explication.split("\n").map((line, i) => {
-                                const isBold = line.startsWith("**") && line.endsWith("**");
-                                return isBold ? (
-                                  <p key={i} className="font-semibold mt-2">
-                                    {line.replace(/\*\*/g, "")}
-                                  </p>
-                                ) : (
-                                  <p key={i}>{line}</p>
-                                );
-                              })}
+                              {currentQuestion.explication
+                                .split("\n")
+                                .map((line, i) => {
+                                  const isBold =
+                                    line.startsWith("**") &&
+                                    line.endsWith("**");
+                                  return isBold ? (
+                                    <p key={i} className="font-semibold mt-2">
+                                      {line.replace(/\*\*/g, "")}
+                                    </p>
+                                  ) : (
+                                    <p key={i}>{line}</p>
+                                  );
+                                })}
                             </div>
                           )}
                         </div>
@@ -754,7 +870,9 @@ export default function QCMPage({
                     {!currentAnswer?.isValidated && (
                       <Button
                         onClick={handleValidate}
-                        disabled={!currentAnswer || currentAnswer.selected.length === 0}
+                        disabled={
+                          !currentAnswer || currentAnswer.selected.length === 0
+                        }
                         className="flex-1"
                       >
                         Valider ma réponse
@@ -763,14 +881,20 @@ export default function QCMPage({
                     <div className="flex gap-3 ml-auto">
                       <Button
                         variant="outline"
-                        onClick={() => setCurrentIndex((i) => Math.max(0, i - 1))}
+                        onClick={() =>
+                          setCurrentIndex((i) => Math.max(0, i - 1))
+                        }
                         disabled={currentIndex === 0}
                       >
                         <ChevronLeft size={16} />
                       </Button>
                       <Button
                         variant="outline"
-                        onClick={() => setCurrentIndex((i) => Math.min(questions.length - 1, i + 1))}
+                        onClick={() =>
+                          setCurrentIndex((i) =>
+                            Math.min(questions.length - 1, i + 1),
+                          )
+                        }
                         disabled={currentIndex === questions.length - 1}
                       >
                         <ChevronRight size={16} />
@@ -785,7 +909,6 @@ export default function QCMPage({
           {/* ── Right column — navigation ── */}
           <div className="lg:col-span-4 space-y-6">
             <div className="sticky top-24">
-
               {/* Navigation rapide */}
               <Card>
                 <CardHeader>
@@ -818,11 +941,11 @@ export default function QCMPage({
                   {/* Legend */}
                   <div className="mt-4 space-y-2 text-xs">
                     {[
-                      { color: "bg-muted",       label: "Non répondu" },
-                      { color: "bg-primary",     label: "Répondu" },
-                      { color: "bg-success",     label: "Correct" },
+                      { color: "bg-muted", label: "Non répondu" },
+                      { color: "bg-primary", label: "Répondu" },
+                      { color: "bg-success", label: "Correct" },
                       { color: "bg-destructive", label: "Incorrect" },
-                      { color: "bg-accent",      label: "Marquée" },
+                      { color: "bg-accent", label: "Marquée" },
                     ].map(({ color, label }) => (
                       <div key={label} className="flex items-center gap-2">
                         <div className={`w-4 h-4 rounded ${color}`} />
@@ -863,15 +986,25 @@ export default function QCMPage({
                   <div className="text-2xl font-bold text-center">
                     {correctCount}
                     <span className="text-muted-foreground text-base font-normal">
-                      {" "}/ {questions.length}
+                      {" "}
+                      / {questions.length}
                     </span>
                   </div>
                   <Progress
-                    value={questions.length ? (correctCount / questions.length) * 100 : 0}
+                    value={
+                      questions.length
+                        ? (correctCount / questions.length) * 100
+                        : 0
+                    }
                     className="h-2"
                   />
                   <p className="text-xs text-center text-muted-foreground">
-                    {Array.from(userAnswers.values()).filter((a) => a.isValidated).length} validée(s)
+                    {
+                      Array.from(userAnswers.values()).filter(
+                        (a) => a.isValidated,
+                      ).length
+                    }{" "}
+                    validée(s)
                   </p>
                 </CardContent>
               </Card>
@@ -894,13 +1027,18 @@ export default function QCMPage({
               <div className="text-5xl font-bold mb-1">
                 {correctCount}
                 <span className="text-muted-foreground text-2xl font-normal">
-                  {" "}/ {questions.length}
+                  {" "}
+                  / {questions.length}
                 </span>
               </div>
-              <p className="text-muted-foreground text-sm">Questions correctes</p>
+              <p className="text-muted-foreground text-sm">
+                Questions correctes
+              </p>
             </div>
             <Progress
-              value={questions.length ? (correctCount / questions.length) * 100 : 0}
+              value={
+                questions.length ? (correctCount / questions.length) * 100 : 0
+              }
               className="h-3"
             />
             <div className="grid grid-cols-3 gap-3 text-center text-sm">
@@ -910,13 +1048,20 @@ export default function QCMPage({
               </div>
               <div className="rounded-lg bg-destructive/10 p-3">
                 <p className="text-xl font-bold text-destructive">
-                  {Array.from(userAnswers.values()).filter((a) => a.isValidated && !a.isCorrect).length}
+                  {
+                    Array.from(userAnswers.values()).filter(
+                      (a) => a.isValidated && !a.isCorrect,
+                    ).length
+                  }
                 </p>
                 <p className="text-xs text-muted-foreground">Incorrectes</p>
               </div>
               <div className="rounded-lg bg-muted p-3">
                 <p className="text-xl font-bold">
-                  {questions.length - Array.from(userAnswers.values()).filter((a) => a.isValidated).length}
+                  {questions.length -
+                    Array.from(userAnswers.values()).filter(
+                      (a) => a.isValidated,
+                    ).length}
                 </p>
                 <p className="text-xs text-muted-foreground">Non répondues</p>
               </div>
@@ -926,19 +1071,26 @@ export default function QCMPage({
             </p>
           </div>
           <DialogFooter>
-            <Button variant="outline"   onClick={() => {
-            setShowResults(false);
-            setIsFinished(false);
-          }}>
-              Continuer
-            </Button>
-           <Button
-              onClick={async () => {
-                handleExit();      
-                await saveTimer(); 
+            <Button
+              variant="outline"
+              onClick={() => {
+                setShowResults(false);
+                setIsFinished(false);
               }}
             >
-              Terminer
+              Continuer
+            </Button>
+            <Button
+              disabled={saving}
+              onClick={async () => {
+                setSaving(true);
+
+                await Promise.all([saveTimer(), saveResultTestQCM()]);
+
+                handleExit();
+              }}
+            >
+              {saving ? "Saving..." : "Terminer"}
             </Button>
           </DialogFooter>
         </DialogContent>

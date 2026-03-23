@@ -63,6 +63,27 @@ CREATE TABLE questions (
 );
 ```
 
+#### **qcm_results**
+```sql
+CREATE TABLE  qcm_results (
+  id uuid primary key default uuid_generate_v4(),
+  user_id uuid,
+  series_id uuid,
+
+  correct_answers int,
+  incorrect_answers int,
+  not_answered int,
+
+  total_questions int,
+  score int,
+
+  total_time int,
+
+  answers jsonb, 
+  created_at timestamp default now()
+);
+```
+
 #### **options_questions**
 ```sql
 CREATE TABLE options_questions (
